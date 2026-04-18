@@ -96,8 +96,12 @@ export default function App() {
            setBranchesByRepo(prev => ({ ...prev, [repo.full_name]: repoBranches }));
            setCurrentBranchByRepo(prev => ({ ...prev, [repo.full_name]: repo.default_branch }));
 
-        } catch (e) {
-          console.error(`Failed to fetch tree for ${repo.full_name}`, e);
+        } catch (e: any) {
+          if (e.message?.includes('409')) {
+             newFileTree[repo.full_name].tree = [];
+          } else {
+             console.error(`Failed to fetch tree for ${repo.full_name}`, e);
+          }
         }
       });
 
@@ -333,90 +337,91 @@ export default function App() {
           return {
               id: key,
               repoFullName,
-              path: pathParts.join('::'), // Rejoin just in case path had ::
+              path: pathParts.join('::'), 
               status: 'queued',
               content: '',
-              error: null
+              error: null,
+              workers: [] // Workers will be assigned dynamically
           };
       });
       setBulkEditJobs(jobs);
 
-      // Simple concurrency queue
-      const processJob = async (job: BulkEditJob) => {
+      const availableModels = [...primaryModels];
+      let nextJobIndex = 0;
+
+      const processJob = async (job: BulkEditJob, model: string) => {
          if (!token) return;
-         setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'processing' } : j));
+         setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { 
+             ...j, 
+             status: 'processing',
+             workers: [{ model, status: 'working', content: '' }]
+         } : j));
          
          try {
              const [owner, repo] = job.repoFullName.split('/');
-             // Fetch original content
-             const { content: originalContent, sha } = await getFileContent(token, owner, repo, job.path, currentBranchByRepo[job.repoFullName]); // Use current branch
+             const { content: originalContent, sha } = await getFileContent(token, owner, repo, job.path, currentBranchByRepo[job.repoFullName]);
              
              let finalContent = '';
+             await bulkEditFileWithAI(
+                 originalContent,
+                 instruction,
+                 job.path,
+                 (chunk) => {
+                     finalContent += chunk;
+                     setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { 
+                         ...j, 
+                         content: finalContent,
+                         workers: [{ model, status: 'working', content: finalContent }]
+                     } : j));
+                 },
+                 () => finalContent,
+                 model
+             );
              
-             // Retry loop with model fallback
-             for (const model of modelsToUse) {
-                 try {
-                     if (model !== modelsToUse[0]) {
-                          setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'retrying', error: `Retrying with ${model}...` } : j));
-                     }
-                     
-                     await bulkEditFileWithAI(
-                         originalContent,
-                         instruction,
-                         job.path,
-                         (chunk) => {
-                             // Stream update
-                             finalContent += chunk;
-                             setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { ...j, content: finalContent } : j));
-                         },
-                         () => finalContent,
-                         model
-                     );
-                     
-                     const cleanedContent = cleanAiCodeResponse(finalContent);
-                     
-                     // If we get here, generation was successful (didn't throw).
-                     // Commit.
-                     await commitFile({
-                         token,
-                         owner,
-                         repo,
-                         branch: currentBranchByRepo[job.repoFullName] || 'main', // fallback to main if undefined
-                         path: job.path,
-                         content: cleanedContent,
-                         message: `AI Edit: ${instruction.slice(0, 50)}...`,
-                         sha
-                     });
-                     
-                     setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'success' } : j));
-                     return; // Success, exit retry loop
-
-                 } catch (aiError) {
-                     console.warn(`Model ${model} failed for ${job.path}:`, aiError);
-                     finalContent = ''; // Reset for next attempt
-                     // Continue to next model
-                 }
-             }
-             // If loop finishes without return, all models failed
-             throw new Error("All AI models failed to generate valid code.");
+             const cleanedContent = cleanAiCodeResponse(finalContent);
+             
+             await commitFile({
+                 token, owner, repo,
+                 branch: currentBranchByRepo[job.repoFullName] || 'main',
+                 path: job.path,
+                 content: cleanedContent,
+                 message: `AI Swarm Edit (${model}): ${instruction.slice(0, 50)}...`,
+                 sha
+             });
+             
+             setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { 
+                 ...j, 
+                 status: 'success',
+                 workers: [{ model, status: 'finished', content: finalContent }]
+             } : j));
 
          } catch (e: any) {
-             setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'failed', error: e.message } : j));
+             console.error(`Model ${model} failed for ${job.path}`, e);
+             setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { 
+                 ...j, 
+                 status: 'failed', 
+                 error: e.message || 'Worker failed',
+                 workers: [{ model, status: 'failed', content: '' }]
+             } : j));
          }
       };
 
-      // Run with all models at once
-      const CONCURRENCY = primaryModels.length;
-      let currentIndex = 0;
-      
-      const runNext = () => {
-          if (currentIndex >= jobs.length) return;
-          const job = jobs[currentIndex++];
-          processJob(job).finally(() => runNext());
+      const startNextJob = async () => {
+          if (nextJobIndex >= jobs.length || availableModels.length === 0) return;
+          
+          const model = availableModels.shift()!;
+          const job = jobs[nextJobIndex++];
+          
+          await processJob(job, model);
+          
+          availableModels.push(model);
+          startNextJob();
       };
 
-      for (let i = 0; i < CONCURRENCY; i++) {
-          runNext();
+      // Fill initial slots
+      const initialBatchSize = Math.min(jobs.length, primaryModels.length);
+      for (let i = 0; i < initialBatchSize; i++) {
+          startNextJob();
       }
   };
 
@@ -438,15 +443,11 @@ export default function App() {
           const repo = await createRepo({ token, name: repoName, description: `AI Generated: ${prompt.slice(0, 50)}...`, isPrivate });
           setProjectGenerationStatus(`Repository ${repo.full_name} created. Planning structure...`);
 
-          // 2. Generate Plan
-          // Retry logic for plan generation
-          let plan: ProjectPlan | null = null;
-          for (const model of modelsToUse) {
-              try {
-                  plan = await generateProjectPlan(prompt, model);
-                  break; 
-              } catch (e) { console.warn("Plan generation failed", e); }
-          }
+          // Parallel Swarm Project Generation Planning
+          const projectPlanSwarm = primaryModels.map(model => 
+              generateProjectPlan(prompt, model)
+          );
+          const plan = await Promise.any(projectPlanSwarm);
           if (!plan) throw new Error("Failed to generate project plan.");
 
           const jobs: ProjectGenerationJob[] = plan.files.map(f => ({
@@ -455,73 +456,84 @@ export default function App() {
               description: f.description,
               status: 'queued',
               content: '',
-              error: null
+              error: null,
+              workers: []
           }));
           setProjectGenerationJobs(jobs);
           setProjectGenerationStatus('Generating files...');
 
-          // 3. Generate & Commit Files Concurrently
-           const processJob = async (job: ProjectGenerationJob) => {
-                setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'generating' } : j));
-                let finalContent = '';
-                try {
-                     // Retry loop for file generation
-                     for (const model of modelsToUse) {
-                         try {
-                             if (model !== modelsToUse[0]) {
-                                  setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'retrying', error: `Retrying with ${model}...` } : j));
-                             }
-                             
-                             await generateFileContent(
-                                 prompt,
-                                 job.path,
-                                 job.description,
-                                 (chunk) => {
-                                     finalContent += chunk;
-                                     setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, content: finalContent } : j));
-                                 },
-                                 () => finalContent,
-                                 model
-                             );
-                             
-                             const cleanedContent = cleanAiCodeResponse(finalContent);
-                             
-                             setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing' } : j));
-                             
-                             await commitFile({
-                                 token,
-                                 owner: repo.owner.login,
-                                 repo: repo.name,
-                                 branch: repo.default_branch,
-                                 path: job.path,
-                                 content: cleanedContent,
-                                 message: `AI Create: ${job.path}`,
-                                 // No sha needed for new files
-                             });
-                             
-                             setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'success' } : j));
-                             return;
+          const availableModels = [...primaryModels];
+          let nextJobIndex = 0;
 
-                         } catch (aiError) {
-                             console.warn(`Model ${model} failed for ${job.path}:`, aiError);
-                             finalContent = '';
-                         }
-                     }
-                     throw new Error("All AI models failed.");
+          const processJob = async (job: ProjectGenerationJob, model: string) => {
+                setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { 
+                    ...j, 
+                    status: 'generating',
+                    workers: [{ model, status: 'working', content: '' }]
+                } : j));
+                try {
+                     let agentContent = '';
+                     await generateFileContent(
+                         prompt,
+                         job.path,
+                         job.description,
+                         (chunk) => {
+                             agentContent += chunk;
+                             setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { 
+                                 ...j, 
+                                 content: agentContent,
+                                 workers: [{ model, status: 'working', content: agentContent }]
+                             } : j));
+                         },
+                         () => agentContent,
+                         model
+                     );
+                     
+                     const cleanedContent = cleanAiCodeResponse(agentContent);
+                     setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing' } : j));
+                     
+                     await commitFile({
+                         token,
+                         owner: repo.owner.login,
+                         repo: repo.name,
+                         branch: repo.default_branch,
+                         path: job.path,
+                         content: cleanedContent,
+                         message: `AI Create Swarm (${model}): ${job.path}`,
+                     });
+                     
+                     setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { 
+                         ...j, 
+                         status: 'success',
+                         workers: [{ model, status: 'finished', content: agentContent }]
+                     } : j));
                 } catch (e: any) {
-                    setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'failed', error: e.message } : j));
+                    console.error(`Model ${model} failed for ${job.path}`, e);
+                    setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { 
+                        ...j, 
+                        status: 'failed', 
+                        error: e.message || 'Worker failed',
+                        workers: [{ model, status: 'failed', content: '' }]
+                    } : j));
                 }
            };
 
-            const CONCURRENCY = primaryModels.length;
-            let currentIndex = 0;
-            const runNext = () => {
-                if (currentIndex >= jobs.length) return;
-                const job = jobs[currentIndex++];
-                processJob(job).finally(() => runNext());
-            };
+           const startNextJob = async () => {
+               if (nextJobIndex >= jobs.length || availableModels.length === 0) return;
+               
+               const model = availableModels.shift()!;
+               const job = jobs[nextJobIndex++];
+               
+               await processJob(job, model);
+               
+               availableModels.push(model);
+               startNextJob();
+           };
 
-            for (let i = 0; i < CONCURRENCY; i++) runNext();
+           const initialBatchSize = Math.min(jobs.length, primaryModels.length);
+           for (let i = 0; i < initialBatchSize; i++) {
+               startNextJob();
+           }
             
             // Wait for all to finish (approximate check in UI)
 
@@ -562,16 +574,11 @@ export default function App() {
       try {
           const { content: seedContent } = await getFileContent(token, owner, repo, seedFilePath, currentBranchByRepo[repoFullName]);
 
-          // 1. Plan
-          let plan: ProjectExpansionPlan | null = null;
-          
-          for (const model of modelsToUse) {
-              try {
-                  const result = await planProjectExpansionEdits([{ path: seedFilePath, content: seedContent }], prompt, model);
-                  plan = result; 
-                  break;
-              } catch (e) { console.warn("Expansion planning failed", e); }
-          }
+          // Parallel Swarm Expansion Planning
+          const expansionPlanSwarm = primaryModels.map(model => 
+              planProjectExpansionEdits([{ path: seedFilePath, content: seedContent }], prompt, model)
+          );
+          const plan = await Promise.any(expansionPlanSwarm);
           if (!plan) throw new Error("Failed to plan expansion.");
 
           const jobs: ProjectExpansionJob[] = plan.filesToCreate.map(f => ({
@@ -582,76 +589,89 @@ export default function App() {
               agentIndex: f.agentIndex,
               status: 'queued',
               content: '',
-              error: null
+              error: null,
+              workers: []
           }));
           
           setExpansionJobs(jobs);
           setExpansionPhase('generating');
 
-          // 2. Execute
-           const processJob = async (job: ProjectExpansionJob) => {
-                setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'generating' } : j));
-                let finalContent = '';
-                try {
-                     for (const model of modelsToUse) {
-                         try {
-                             if (model !== modelsToUse[0]) {
-                                  setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'retrying', error: `Retrying with ${model}...` } : j));
-                             }
-                             
-                             await generateFileContent(
-                                 prompt,
-                                 job.path,
-                                 job.description,
-                                 (chunk) => {
-                                     finalContent += chunk;
-                                     setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, content: finalContent } : j));
-                                 },
-                                 () => finalContent,
-                                 model
-                             );
-                             
-                             const cleanedContent = cleanAiCodeResponse(finalContent);
-                             setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing' } : j));
-                             
-                             await commitFile({
-                                 token: token!,
-                                 owner,
-                                 repo,
-                                 branch: currentBranchByRepo[repoFullName] || 'main',
-                                 path: job.path,
-                                 content: cleanedContent,
-                                 message: `AI Expansion: ${job.path}`
-                             });
-                             
-                             setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'success' } : j));
-                             return;
+          const availableModels = [...primaryModels];
+          let nextJobIndex = 0;
 
-                         } catch (aiError) {
-                             console.warn(`Model ${model} failed for ${job.path}:`, aiError);
-                             finalContent = '';
-                         }
-                     }
-                     throw new Error("All AI models failed.");
+          const processJob = async (job: ProjectExpansionJob, model: string) => {
+                setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
+                    ...j, 
+                    status: 'generating',
+                    workers: [{ model, status: 'working', content: '' }]
+                } : j));
+                try {
+                     let agentContent = '';
+                     await generateFileContent(
+                         prompt,
+                         job.path,
+                         job.description,
+                         (chunk) => {
+                             agentContent += chunk;
+                             setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
+                                 ...j, 
+                                 content: agentContent,
+                                 workers: [{ model, status: 'working', content: agentContent }]
+                             } : j));
+                         },
+                         () => agentContent,
+                         model
+                     );
+                     
+                     const cleanedContent = cleanAiCodeResponse(agentContent);
+                     setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing' } : j));
+                     
+                     await commitFile({
+                         token: token!,
+                         owner,
+                         repo,
+                         branch: currentBranchByRepo[repoFullName] || 'main',
+                         path: job.path,
+                         content: cleanedContent,
+                         message: `AI Expansion Swarm (${model}): ${job.path}`
+                     });
+                     
+                     setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
+                         ...j, 
+                         status: 'success',
+                         workers: [{ model, status: 'finished', content: agentContent }]
+                     } : j));
                 } catch (e: any) {
-                    setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'failed', error: e.message } : j));
+                    console.error(`Model ${model} failed for expansion ${job.path}`, e);
+                    setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
+                        ...j, 
+                        status: 'failed', 
+                        error: e.message || 'Worker failed',
+                        workers: [{ model, status: 'failed', content: '' }]
+                    } : j));
                 }
            };
 
-            const CONCURRENCY = primaryModels.length; // High concurrency for expansion
-            let currentIndex = 0;
-            const runNext = () => {
-                if (currentIndex >= jobs.length) return;
-                const job = jobs[currentIndex++];
-                processJob(job).finally(() => runNext());
-            };
+           const startNextJob = async () => {
+               if (nextJobIndex >= jobs.length || availableModels.length === 0) return;
+               
+               const model = availableModels.shift()!;
+               const job = jobs[nextJobIndex++];
+               
+               await processJob(job, model);
+               
+               availableModels.push(model);
+               startNextJob();
+           };
 
-            for (let i = 0; i < CONCURRENCY; i++) runNext();
+           const initialBatchSize = Math.min(jobs.length, primaryModels.length);
+           for (let i = 0; i < initialBatchSize; i++) {
+               startNextJob();
+           }
 
-            // Monitor completion
-            const checkCompletion = setInterval(() => {
-                const pending = jobs.filter(j => j.status === 'queued' || j.status === 'generating' || j.status === 'committing' || j.status === 'retrying').length;
-                if (pending === 0 && currentIndex >= jobs.length) {
+           const checkCompletion = setInterval(() => {
+                const pending = jobs.filter(j => j.status === 'queued' || j.status === 'generating' || j.status === 'committing').length;
+                if (pending === 0 && nextJobIndex >= jobs.length) {
                     setExpansionPhase('complete');
                     clearInterval(checkCompletion);
                 }
@@ -699,18 +719,13 @@ export default function App() {
                   if (attempt === 1) setAdvancedEditPhase('planning');
                   else setAdvancedEditPhase('analyzing_failure');
 
-                  let plan: RepositoryEditPlan | null = null;
-                  
-                  for (const model of modelsToUse) {
-                      try {
-                          if (attempt === 1) {
-                              plan = await planRepositoryEdit(currentInstruction, activeFile.path, currentFiles, model);
-                          } else {
-                              plan = await correctCodeFromBuildError(currentInstruction, currentFiles, [], advancedEditBuildLogs || '', model);
-                          }
-                          break;
-                      } catch (e) { console.warn("Planning failed", e); }
-                  }
+                  // Parallel Swarm Advanced Edit Planning
+                  const planningSwarm = primaryModels.map(model => 
+                      attempt === 1 ? 
+                      planRepositoryEdit(currentInstruction, activeFile.path, currentFiles, model) :
+                      correctCodeFromBuildError(currentInstruction, currentFiles, [], advancedEditBuildLogs || '', model)
+                  );
+                  const plan = await Promise.any(planningSwarm);
                   
                   if (!plan) throw new Error("Failed to generate edit plan.");
                   setAiThought(plan.reasoning);
@@ -720,21 +735,26 @@ export default function App() {
                       path: f.path,
                       status: 'planning',
                       content: '',
-                      error: null
+                      error: null,
+                      workers: primaryModels.map(m => ({ model: m, status: 'idle', content: '' }))
                   }));
                   setAdvancedEditJobs(jobs);
                   
                   setAdvancedEditPhase('editing');
                   
-                  // Process files in parallel swarm
-                  const CONCURRENCY = primaryModels.length;
-                  let editIndex = 0;
-                  
-                  const processEdit = async (fileEdit: { path: string, changes: string }) => {
+                  const availableModels = [...primaryModels];
+                  const queue = [...plan.filesToEdit];
+                  let nextItemIndex = 0;
+
+                  const processEdit = async (fileEdit: { path: string, changes: string }, model: string) => {
                       const jobIndex = jobs.findIndex(j => j.path === fileEdit.path);
                       if (jobIndex === -1) return;
                       
-                      setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { ...j, status: 'editing' } : j));
+                      setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { 
+                          ...j, 
+                          status: 'editing',
+                          workers: [{ model, status: 'working', content: '' }]
+                      } : j));
                       
                       let originalContent = currentFiles.find(f => f.path === fileEdit.path)?.content || '';
                       if (!originalContent) {
@@ -744,35 +764,69 @@ export default function App() {
                           } catch (e) { }
                       }
 
-                      let newContent = '';
-                      await streamRepositoryFileEdit(originalContent, fileEdit.changes, fileEdit.path, (chunk) => {
-                          newContent += chunk;
-                          setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { ...j, content: newContent } : j));
-                      }, modelsToUse[0]);
-                      
-                      const cleanedContent = cleanAiCodeResponse(newContent);
-                      setAdvancedEditPhase('committing');
-                      setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { ...j, status: 'committing' } : j));
+                      let agentContent = '';
+                      try {
+                          await streamRepositoryFileEdit(originalContent, fileEdit.changes, fileEdit.path, (chunk) => {
+                              agentContent += chunk;
+                              setAdvancedEditJobs(prev => prev.map(j => j.id === fileEdit.path ? { 
+                                  ...j, 
+                                  content: agentContent,
+                                  workers: [{ model, status: 'working', content: agentContent }]
+                              } : j));
+                          }, model);
+                          
+                          const cleanedContent = cleanAiCodeResponse(agentContent);
+                          
+                          setAdvancedEditPhase('committing');
+                          setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { ...j, status: 'committing' } : j));
 
-                      await commitFile({
-                          token, owner, repo, branch,
-                          path: fileEdit.path,
-                          content: cleanedContent,
-                          message: `AI Swarm Edit (Attempt ${attempt}): ${fileEdit.path}`,
-                          sha: currentFiles.find(f => f.path === fileEdit.path)?.sha
-                      });
+                          await commitFile({
+                              token, owner, repo, branch,
+                              path: fileEdit.path,
+                              content: cleanedContent,
+                              message: `AI Swarm Edit (${model}) (Attempt ${attempt}): ${fileEdit.path}`,
+                              sha: currentFiles.find(f => f.path === fileEdit.path)?.sha
+                          });
 
-                      setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { ...j, status: 'success' } : j));
+                          setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { 
+                              ...j, 
+                              status: 'success',
+                              workers: [{ model, status: 'finished', content: agentContent }]
+                          } : j));
+                      } catch (e: any) {
+                          console.error(`Model ${model} failed for advanced edit ${fileEdit.path}`, e);
+                          setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { 
+                              ...j, 
+                              status: 'failed',
+                              error: e.message || 'Worker failed',
+                              workers: [{ model, status: 'failed', content: '' }]
+                          } : j));
+                      }
                   };
 
-                  const queue = [...plan.filesToEdit];
-                  const workers = Array(Math.min(CONCURRENCY, queue.length)).fill(null).map(async () => {
-                      while (queue.length > 0) {
-                          const item = queue.shift();
-                          if (item) await processEdit(item);
-                      }
-                  });
-                  await Promise.all(workers);
+                  const startNextEdit = async () => {
+                      if (nextItemIndex >= queue.length || availableModels.length === 0) return;
+                      
+                      const model = availableModels.shift()!;
+                      const item = queue[nextItemIndex++];
+                      
+                      await processEdit(item, model);
+                      
+                      availableModels.push(model);
+                      startNextEdit();
+                  };
+
+                  const initialBatchSize = Math.min(queue.length, primaryModels.length);
+                  for (let i = 0; i < initialBatchSize; i++) {
+                      startNextEdit();
+                  }
+
+                  // Wait for completion (poll)
+                  while (true) {
+                      const pending = jobs.filter(j => j.status === 'planning' || j.status === 'editing' || j.status === 'committing').length;
+                      if (pending === 0 && nextItemIndex >= queue.length) break;
+                      await new Promise(r => setTimeout(r, 1000));
+                  }
 
                   setAdvancedEditPhase('triggering_workflow');
                   await triggerWorkflow(token, owner, repo, workflowId, branch);

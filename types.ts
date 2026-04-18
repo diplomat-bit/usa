@@ -82,6 +82,12 @@ export interface PullRequest {
 
 export type BulkEditJobStatus = 'queued' | 'processing' | 'retrying' | 'success' | 'skipped' | 'failed';
 
+export interface AIWorkerStatus {
+  model: string;
+  status: 'idle' | 'working' | 'finished' | 'failed';
+  content: string;
+}
+
 export interface BulkEditJob {
   id: string; // repoFullName::path
   repoFullName: string;
@@ -89,6 +95,7 @@ export interface BulkEditJob {
   status: BulkEditJobStatus;
   content: string; // For streaming preview
   error: string | null;
+  workers?: AIWorkerStatus[];
 }
 
 export interface ProjectPlan {
@@ -107,6 +114,7 @@ export interface ProjectGenerationJob {
   status: ProjectGenerationJobStatus;
   content: string; // For streaming preview
   error: string | null;
+  workers?: AIWorkerStatus[];
 }
 
 // Types for the new Project Expansion feature
@@ -134,6 +142,7 @@ export interface ProjectExpansionJob {
   status: ProjectExpansionJobStatus;
   content: string; // For streaming preview
   error: string | null;
+  workers?: AIWorkerStatus[];
 }
 
 // Types for GitHub Actions Workflows
@@ -172,4 +181,5 @@ export interface AdvancedEditJob {
     status: AdvancedEditJobStatus;
     content: string;
     error: string | null;
+    workers?: AIWorkerStatus[];
 }

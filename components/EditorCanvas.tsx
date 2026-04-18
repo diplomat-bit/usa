@@ -164,10 +164,10 @@ export const EditorCanvas: React.FC<EditorCanvasProps> = ({
           </div>
           <button
             onClick={() => setIsCommitModalOpen(true)}
-            disabled={isLoading || !hasChanges}
+            disabled={isLoading || !hasChanges || isSwarmModeActive}
             className="bg-green-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
           >
-            Commit Active File
+            {isSwarmModeActive ? 'Autonomous Swarm Running...' : 'Commit Active File'}
           </button>
           {currentBranch && currentBranch !== activeFile.defaultBranch && (
             <button onClick={() => setIsCreatingPR(!isCreatingPR)} className="bg-cyan-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-cyan-700 disabled:bg-gray-500" disabled={isLoading}>
