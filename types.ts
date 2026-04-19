@@ -96,6 +96,7 @@ export interface BulkEditJob {
   content: string; // For streaming preview
   error: string | null;
   workers?: AIWorkerStatus[];
+  attempts?: number;
 }
 
 export interface ProjectPlan {
@@ -115,6 +116,7 @@ export interface ProjectGenerationJob {
   content: string; // For streaming preview
   error: string | null;
   workers?: AIWorkerStatus[];
+  attempts?: number;
 }
 
 // Types for the new Project Expansion feature
@@ -143,6 +145,7 @@ export interface ProjectExpansionJob {
   content: string; // For streaming preview
   error: string | null;
   workers?: AIWorkerStatus[];
+  attempts?: number;
 }
 
 // Types for GitHub Actions Workflows
@@ -182,4 +185,5 @@ export interface AdvancedEditJob {
     content: string;
     error: string | null;
     workers?: AIWorkerStatus[];
+    attempts?: number;
 }

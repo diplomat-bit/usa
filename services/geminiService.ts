@@ -9,11 +9,17 @@ export const primaryModels = [
   "gemini-2.5-pro",
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
+  "gemini-2.5-flash-preview-09-2025",
+  "gemini-2.5-flash-lite-preview-09-2025",
   "gemini-2.0-flash",
   "gemini-2.0-flash-001",
+  "gemini-2.0-flash-exp",
   "gemini-2.0-flash-lite",
   "gemini-2.0-flash-lite-001",
+  "gemini-2.0-flash-lite-preview",
+  "gemini-2.0-flash-lite-preview-02-05",
   "gemini-pro-latest",
+  "gemini-exp-1206",
   "gemma-3-27b-it",
   "gemma-3-12b-it",
   "gemma-3-4b-it",
@@ -23,23 +29,31 @@ export const primaryModels = [
 ];
 
 export const fallbackModels = [
+
   "gemini-3.1-pro-preview",
   "gemini-3.1-flash-lite-preview",
   "gemini-3-pro-preview",
   "gemini-2.5-pro",
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
+  "gemini-2.5-flash-preview-09-2025",
+  "gemini-2.5-flash-lite-preview-09-2025",
   "gemini-2.0-flash",
   "gemini-2.0-flash-001",
+  "gemini-2.0-flash-exp",
   "gemini-2.0-flash-lite",
   "gemini-2.0-flash-lite-001",
+  "gemini-2.0-flash-lite-preview",
+  "gemini-2.0-flash-lite-preview-02-05",
   "gemini-pro-latest",
+  "gemini-exp-1206",
   "gemma-3-27b-it",
   "gemma-3-12b-it",
   "gemma-3-4b-it",
   "gemma-3-1b-it",
   "gemma-3n-e4b-it",
   "gemma-3n-e2b-it"
+   
 ];
 
 export const modelsToUse = [...primaryModels, ...fallbackModels];
