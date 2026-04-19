@@ -61,10 +61,12 @@ export default function App() {
   const [lastInstruction, setLastInstruction] = useState<string>('');
   const [isSwarmModeActive, setIsSwarmModeActive] = useState(false);
   const swarmIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const openingFilesRef = useRef<Set<string>>(new Set());
 
   // State for simple AI Edit
   const [isAiChatModalOpen, setAiChatModalOpen] = useState(false);
   const modelLastUsedRef = useRef<Record<string, number>>({});
+  const commitChainRef = useRef<Promise<any>>(Promise.resolve());
 
   const activeFile = openFiles.find(f => (f.repoFullName + '::' + f.path) === activeFileKey);
   const currentBranch = activeFile ? currentBranchByRepo[activeFile.repoFullName] : null;
@@ -120,14 +122,23 @@ export default function App() {
 
   const handleFileSelect = async (repoFullName: string, path: string) => {
     const fileKey = repoFullName + '::' + path;
-    const existingFile = openFiles.find(f => (f.repoFullName + '::' + f.path) === fileKey);
     
-    if (existingFile) {
-      setActiveFileKey(fileKey);
-      return;
+    // 1. Sync check against current state
+    if (openFiles.some(f => (f.repoFullName + '::' + f.path) === fileKey)) {
+        setActiveFileKey(fileKey);
+        return;
     }
 
-    if (!token) return;
+    // 2. Race condition guard
+    if (openingFilesRef.current.has(fileKey)) {
+        return;
+    }
+    openingFilesRef.current.add(fileKey);
+
+    if (!token) {
+        openingFilesRef.current.delete(fileKey);
+        return;
+    }
 
     setIsLoading(true);
     setLoadingMessage(`Opening ${path}...`);
@@ -149,12 +160,17 @@ export default function App() {
             defaultBranch: repo.default_branch
         };
 
-        setOpenFiles(prev => [...prev, newFile]);
+        setOpenFiles(prev => {
+            const exists = prev.some(f => (f.repoFullName + '::' + f.path) === fileKey);
+            if (exists) return prev;
+            return [...prev, newFile];
+        });
         setActiveFileKey(fileKey);
     } catch (error) {
         console.error(error);
         setAlert({ type: 'error', message: `Failed to open file: ${path}` });
     } finally {
+        openingFilesRef.current.delete(fileKey);
         setIsLoading(false);
         setLoadingMessage('');
     }
@@ -380,14 +396,23 @@ export default function App() {
          
          const cleanedContent = cleanAiCodeResponse(finalContent);
          
-         await commitFile({
-             token, owner, repo,
-             branch: currentBranchByRepo[job.repoFullName] || 'main',
-             path: job.path,
-             content: cleanedContent,
-             message: `AI Swarm Edit (${model}): ${instruction.slice(0, 50)}...`,
-             sha
-         });
+         await (commitChainRef.current = commitChainRef.current.then(async () => {
+             // JIT fetch SHA inside the serial lock
+             let currentSha = sha;
+             try {
+                 const f = await getFileContent(token, owner, repo, job.path, currentBranchByRepo[job.repoFullName]);
+                 currentSha = f.sha;
+             } catch (e) {}
+
+             return commitFile({
+                 token, owner, repo,
+                 branch: currentBranchByRepo[job.repoFullName] || 'main',
+                 path: job.path,
+                 content: cleanedContent,
+                 message: `AI Swarm Edit (${model}): ${instruction.slice(0, 50)}...`,
+                 sha: currentSha
+             });
+         }));
          
          setBulkEditJobs(prev => prev.map(j => j.id === job.id ? { 
              ...j, 
@@ -462,8 +487,8 @@ export default function App() {
           const plan = await Promise.any(projectPlanSwarm);
           if (!plan) throw new Error("Failed to generate project plan.");
 
-          const jobList: ProjectGenerationJob[] = plan.files.map(f => ({
-              id: f.path,
+          const jobList: ProjectGenerationJob[] = plan.files.map((f, idx) => ({
+              id: `${repoName}::${f.path}::${idx}`,
               path: f.path,
               description: f.description,
               status: 'queued',
@@ -504,15 +529,25 @@ export default function App() {
                 const cleanedContent = cleanAiCodeResponse(agentContent);
                 setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing' } : j));
                 
-                await commitFile({
-                    token,
-                    owner: repo.owner.login,
-                    repo: repo.name,
-                    branch: repo.default_branch,
-                    path: job.path,
-                    content: cleanedContent,
-                    message: `AI Create Swarm (${model}): ${job.path}`,
-                });
+                await (commitChainRef.current = commitChainRef.current.then(async () => {
+                    // JIT fetch SHA inside the serial lock
+                    let currentSha: string | undefined = undefined;
+                    try {
+                        const f = await getFileContent(token, repo.owner.login, repo.name, job.path, repo.default_branch);
+                        currentSha = f.sha;
+                    } catch (e) {}
+
+                    return commitFile({
+                        token,
+                        owner: repo.owner.login,
+                        repo: repo.name,
+                        branch: repo.default_branch,
+                        path: job.path,
+                        content: cleanedContent,
+                        message: `AI Create Swarm (${model}): ${job.path}`,
+                        sha: currentSha
+                    });
+                }));
                 
                 setProjectGenerationJobs(prev => prev.map(j => j.id === job.id ? { 
                     ...j, 
@@ -604,8 +639,8 @@ export default function App() {
           const plan = await Promise.any(expansionPlanSwarm);
           if (!plan) throw new Error("Failed to plan expansion.");
 
-          const jobList: ProjectExpansionJob[] = plan.filesToCreate.map(f => ({
-              id: f.path,
+          const jobList: ProjectExpansionJob[] = plan.filesToCreate.map((f, idx) => ({
+              id: `${repoFullName}::${f.path}::${idx}`, // Unique ID even if paths repeat
               path: f.path,
               type: 'create',
               description: f.description,
@@ -649,15 +684,25 @@ export default function App() {
                 const cleanedContent = cleanAiCodeResponse(agentContent);
                 setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing' } : j));
                 
-                await commitFile({
-                    token: token!,
-                    owner,
-                    repo,
-                    branch: currentBranchByRepo[repoFullName] || 'main',
-                    path: job.path,
-                    content: cleanedContent,
-                    message: `AI Expansion Swarm (${model}): ${job.path}`
-                });
+                await (commitChainRef.current = commitChainRef.current.then(async () => {
+                    // JIT fetch SHA inside the serial lock
+                    let currentSha: string | undefined = undefined;
+                    try {
+                        const f = await getFileContent(token!, owner, repo, job.path, currentBranchByRepo[repoFullName] || 'main');
+                        currentSha = f.sha;
+                    } catch (e) {}
+
+                    return commitFile({
+                        token: token!,
+                        owner,
+                        repo,
+                        branch: currentBranchByRepo[repoFullName] || 'main',
+                        path: job.path,
+                        content: cleanedContent,
+                        message: `AI Expansion Swarm (${model}): ${job.path}`,
+                        sha: currentSha
+                    });
+                }));
                 
                 setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
                     ...j, 
@@ -764,8 +809,8 @@ export default function App() {
                   if (!plan) throw new Error("Failed to generate edit plan.");
                   setAiThought(plan.reasoning);
 
-                  const jobs: AdvancedEditJob[] = plan.filesToEdit.map(f => ({
-                      id: f.path,
+                  const jobs: AdvancedEditJob[] = plan.filesToEdit.map((f, idx) => ({
+                      id: `${activeFile.repoFullName}::${f.path}::${idx}`,
                       path: f.path,
                       status: 'planning',
                       content: '',
@@ -799,7 +844,7 @@ export default function App() {
                       let agentContent = '';
                       await streamRepositoryFileEdit(originalContent, fileEdit.changes, fileEdit.path, (chunk) => {
                           agentContent += chunk;
-                          setAdvancedEditJobs(prev => prev.map(j => j.id === fileEdit.path ? { 
+                          setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { 
                               ...j, 
                               content: agentContent,
                               workers: [{ model, status: 'working', content: agentContent }]
@@ -811,13 +856,22 @@ export default function App() {
                       setAdvancedEditPhase('committing');
                       setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { ...j, status: 'committing' } : j));
 
-                      await commitFile({
-                          token, owner, repo, branch,
-                          path: fileEdit.path,
-                          content: cleanedContent,
-                          message: `AI Swarm Edit (${model}) (Attempt ${attempt}): ${fileEdit.path}`,
-                          sha: currentFiles.find(f => f.path === fileEdit.path)?.sha
-                      });
+                      await (commitChainRef.current = commitChainRef.current.then(async () => {
+                          // JIT fetch SHA inside the serial lock
+                          let currentSha: string | undefined = undefined;
+                          try {
+                              const f = await getFileContent(token, owner, repo, fileEdit.path, branch);
+                              currentSha = f.sha;
+                          } catch (e) {}
+
+                          return commitFile({
+                              token, owner, repo, branch,
+                              path: fileEdit.path,
+                              content: cleanedContent,
+                              message: `AI Swarm Edit (${model}) (Attempt ${attempt}): ${fileEdit.path}`,
+                              sha: currentSha
+                          });
+                      }));
 
                       setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { 
                           ...j, 

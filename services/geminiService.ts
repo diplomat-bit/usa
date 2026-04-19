@@ -2,58 +2,21 @@ import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { ProjectPlan, ProjectExpansionPlan, RepositoryEditPlan } from '../types';
 
 // Updated to a 7-worker configuration for higher concurrency
+// PRIMARY MODELS: The front line of the Autonomous Architect
 export const primaryModels = [
-  "gemini-3.1-pro-preview",
-  "gemini-3.1-flash-lite-preview",
-  "gemini-3-pro-preview",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash-preview-09-2025",
-  "gemini-2.5-flash-lite-preview-09-2025",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-001",
-  "gemini-2.0-flash-exp",
-  "gemini-2.0-flash-lite",
-  "gemini-2.0-flash-lite-001",
-  "gemini-2.0-flash-lite-preview",
-  "gemini-2.0-flash-lite-preview-02-05",
-  "gemini-pro-latest",
-  "gemini-exp-1206",
-  "gemma-3-27b-it",
-  "gemma-3-12b-it",
-  "gemma-3-4b-it",
-  "gemma-3-1b-it",
-  "gemma-3n-e4b-it",
-  "gemma-3n-e2b-it"
+    "gemini-3.1-pro-preview",           // The 'Identity as Authority' Lead
+    "gemini-3.1-flash-lite-preview",    // Replaced 2.5-flash-lite in March
+    "gemini-3-flash-preview",           // Reliable, fast production
+    "gemini-pro-latest",                // Currently points to 3.1 Pro
+    "gemini-flash-latest"               // Currently points to 3 Flash
 ];
 
+// FALLBACK MODELS: Redundancy for the SAVE America Infrastructure
 export const fallbackModels = [
-
-  "gemini-3.1-pro-preview",
-  "gemini-3.1-flash-lite-preview",
-  "gemini-3-pro-preview",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash-preview-09-2025",
-  "gemini-2.5-flash-lite-preview-09-2025",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-001",
-  "gemini-2.0-flash-exp",
-  "gemini-2.0-flash-lite",
-  "gemini-2.0-flash-lite-001",
-  "gemini-2.0-flash-lite-preview",
-  "gemini-2.0-flash-lite-preview-02-05",
-  "gemini-pro-latest",
-  "gemini-exp-1206",
-  "gemma-3-27b-it",
-  "gemma-3-12b-it",
-  "gemma-3-4b-it",
-  "gemma-3-1b-it",
-  "gemma-3n-e4b-it",
-  "gemma-3n-e2b-it"
-   
+    "gemma-4-31b-it",                    // Released April 2, 2026
+    "gemma-4-26b-a4b-it",                // High-efficiency open model
+    "gemini-2.5-pro",                   // Older but stable until late 2026
+    "gemini-2.5-flash"                  // Proven reliability
 ];
 
 export const modelsToUse = [...primaryModels, ...fallbackModels];
