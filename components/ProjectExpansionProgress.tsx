@@ -66,7 +66,7 @@ export const ProjectExpansionProgress: React.FC<ProjectExpansionProgressProps> =
   const getStatusMessage = () => {
     switch(phase) {
         case 'planning': return 'Orchestrating architectural expansion plan...';
-        case 'generating': return `Manifesting ${jobs.length} neural nodes...`;
+        case 'generating': return `Manifesting ${jobs.reduce((acc, j) => acc + j.batch.files.length, 0)} neural nodes across ${jobs.length} batches...`;
         case 'complete': return 'Synaptic expansion successful.';
         default: return 'Initializing...';
     }
@@ -104,7 +104,7 @@ export const ProjectExpansionProgress: React.FC<ProjectExpansionProgressProps> =
                     {phase !== 'complete' && <Spinner className="h-4 w-4" />}
                     {getStatusMessage()}
                 </span>
-                <span className="font-mono text-purple-400">{`${successCount} / ${jobs.length} synced`}</span>
+                <span className="font-mono text-purple-400">{`${successCount} / ${jobs.length} batches synced`}</span>
             </div>
             <div className="w-full bg-gray-900 rounded-full h-1.5 overflow-hidden">
                 <div className="bg-gradient-to-r from-purple-700 to-indigo-500 h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${progress}%` }}></div>
@@ -136,11 +136,10 @@ export const ProjectExpansionProgress: React.FC<ProjectExpansionProgressProps> =
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2 overflow-hidden">
                                         <StatusIcon status={job.status} />
-                                        {job.type === 'edit' ? 
-                                            <span className="text-[9px] font-bold text-yellow-400/80 bg-yellow-900/30 px-1.5 py-0.5 rounded border border-yellow-700/30">EDIT</span> :
-                                            <span className="text-[9px] font-bold text-purple-400 bg-purple-900/30 px-1.5 py-0.5 rounded border border-purple-700/30">NEW</span>
-                                        }
-                                        <span className="truncate text-xs font-mono text-gray-300" title={job.path}>{job.path.split('/').pop()}</span>
+                                        <span className="text-[9px] font-bold text-purple-400 bg-purple-900/30 px-1.5 py-0.5 rounded border border-purple-700/30">BATCH</span>
+                                        <span className="truncate text-xs font-mono text-gray-300" title={job.batch.files.map(f => f.path).join(', ')}>
+                                            {job.batch.files.length} Files: {job.batch.files[0].path.split('/').pop()}{job.batch.files.length > 1 ? '...' : ''}
+                                        </span>
                                     </div>
                                 </div>
                                 <WorkerGrid workers={job.workers} />
@@ -159,10 +158,10 @@ export const ProjectExpansionProgress: React.FC<ProjectExpansionProgressProps> =
                         {activeJobs.slice(0, 9).map(job => (
                             <div key={job.id} className="flex flex-col min-h-0 bg-gray-850 rounded-xl overflow-hidden border border-gray-700/50 hover:border-purple-500/30 transition-colors shadow-sm">
                                 <div className="bg-gray-800/80 px-3 py-2 flex justify-between items-center border-b border-gray-700">
-                                    <p className="text-purple-400 font-mono text-[9px] font-bold truncate max-w-[70%]" title={job.path}>
-                                        {job.path}
+                                    <p className="text-purple-400 font-mono text-[9px] font-bold truncate max-w-[70%]" title={job.batch.files.map(f => f.path).join(', ')}>
+                                        Batch: {job.batch.files[0].path} {job.batch.files.length > 1 ? `(+${job.batch.files.length - 1})` : ''}
                                     </p>
-                                    <span className="text-[8px] font-mono bg-indigo-900/50 text-indigo-300 px-1 px-0.5 rounded">ID:{job.agentIndex}</span>
+                                    <span className="text-[8px] font-mono bg-indigo-900/50 text-indigo-300 px-1 px-0.5 rounded">ID:{job.batch.agentIndex}</span>
                                 </div>
                                 <div className="p-3 bg-gray-950 flex-grow font-mono overflow-y-auto custom-scrollbar-purple">
                                         <pre className="text-[10px] text-purple-100/80 whitespace-pre-wrap leading-relaxed animate-in slide-in-from-left-2 duration-300">

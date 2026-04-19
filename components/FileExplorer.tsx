@@ -203,12 +203,12 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                 </button>
                  <button
                     onClick={onStartProjectExpansion}
-                    disabled={selectedFiles.size !== 1}
+                    disabled={selectedFiles.size === 0}
                     className="w-full flex items-center justify-center gap-2 bg-purple-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-purple-500 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed"
-                    title={selectedFiles.size !== 1 ? 'You must select exactly 1 file to use this feature.' : 'Expand the project based on this seed file.'}
+                    title={selectedFiles.size === 0 ? 'Select seed files to expand from.' : 'Expand the project based on selected seed files.'}
                 >
                     <MagicWandIcon className="w-5 h-5" />
-                    Expand Project (Seed)
+                    Expand Project (Seeds)
                 </button>
             </div>
         )}

@@ -3,7 +3,7 @@ import { AuthModal } from './components/AuthModal';
 import { FileExplorer } from './components/FileExplorer';
 import { EditorCanvas } from './components/EditorCanvas';
 import { fetchAllRepos, fetchRepoTree, getFileContent, commitFile, getRepoBranches, createBranch, createPullRequest, createRepo, triggerWorkflow, getWorkflowRuns, getWorkflowRun, getWorkflowRunLogs } from './services/githubService';
-import { primaryModels, fallbackModels, planRepositoryEdit, bulkEditFileWithAI, generateProjectPlan, generateFileContent, planProjectExpansionEdits, modelsToUse, streamSingleFileEdit, cleanAiCodeResponse, correctCodeFromBuildError, streamRepositoryFileEdit, setGeminiApiKey } from './services/geminiService';
+import { primaryModels, fallbackModels, planRepositoryEdit, bulkEditFileWithAI, generateProjectPlan, generateFileContent, planProjectExpansionEdits, generateMultipleFilesContent, modelsToUse, streamSingleFileEdit, cleanAiCodeResponse, correctCodeFromBuildError, streamRepositoryFileEdit, setGeminiApiKey } from './services/geminiService';
 import { GithubRepo, UnifiedFileTree, SelectedFile, Alert, Branch, FileNode, DirNode, BulkEditJob, ProjectGenerationJob, ProjectExpansionJob, ProjectExpansionPhase, ProjectPlan, AdvancedEditJob, AdvancedEditPhase, WorkflowRun, AdvancedEditJobStatus, RepositoryEditPlan, ProjectExpansionPlan } from './types';
 import { Spinner } from './components/Spinner';
 import { AlertPopup } from './components/AlertPopup';
@@ -16,7 +16,7 @@ import { ProjectExpansionProgress } from './components/ProjectExpansionProgress'
 import { AdvancedAiEditModal } from './components/AdvancedAiEditModal';
 import { AdvancedEditProgress } from './components/AdvancedEditProgress';
 import { AiChatModal } from './components/AiChatModal';
-import { getAllFilePaths } from './utils';
+import { getAllFilePaths, getRandomElements } from './utils';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
@@ -618,35 +618,61 @@ export default function App() {
       setExpansionPhase('planning');
       setExpansionJobs([]);
 
-      if (!token || selectedFiles.size !== 1) {
-          setAlert({ type: 'error', message: 'Please select exactly one seed file.' });
+      if (!token || selectedFiles.size === 0) {
+          setAlert({ type: 'error', message: 'Please select at least one seed file.' });
           setIsExpandingProject(false);
           return;
       }
       
-      const seedFileKey = Array.from(selectedFiles)[0] as string;
-      const [repoFullName, ...pathParts] = seedFileKey.split('::');
-      const seedFilePath = pathParts.join('::');
-      const [owner, repo] = repoFullName.split('/');
-      
       try {
-          const { content: seedContent } = await getFileContent(token, owner, repo, seedFilePath, currentBranchByRepo[repoFullName]);
+          const selectedFileKeys = Array.from(selectedFiles) as string[];
+          const repoFullName = selectedFileKeys[0].split('::')[0];
+          const [owner, repo] = repoFullName.split('/');
+          
+          // Stage 1: Gather Seed Files (with a safety cap on total content size)
+          let totalSeedCharCount = 0;
+          const MAX_SEED_CHARS = 2000000; // 2M chars for seeds
+          
+          const seedFiles = await Promise.all(selectedFileKeys.map(async key => {
+               const pathParts = key.split('::').slice(1);
+               const path = pathParts.join('::');
+               if (totalSeedCharCount > MAX_SEED_CHARS) return { path, content: "[Omitted: Context Limit Reached]" };
+               
+               try {
+                   const { content } = await getFileContent(token, owner, repo, path, currentBranchByRepo[repoFullName]);
+                   totalSeedCharCount += content.length;
+                   return { path, content };
+               } catch (e) {
+                   return { path, content: "[Error fetching content]" };
+               }
+          }));
 
-          // Parallel Swarm Expansion Planning
+          // Stage 2: Gather 50 Random Files for Context
+          const allRepoPaths = getAllFilePaths(fileTree[repoFullName]?.tree || []);
+          const otherPaths = allRepoPaths.filter(p => !seedFiles.some(s => s.path === p));
+          const randomPaths = getRandomElements(otherPaths, 50);
+          
+          const randomFiles = await Promise.all(randomPaths.map(async path => {
+               try {
+                   const { content } = await getFileContent(token, owner, repo, path, currentBranchByRepo[repoFullName]);
+                   return { path, content };
+               } catch (e) { return null; }
+          })).then(results => results.filter((r): r is {path: string, content: string} => r !== null));
+
+          // Stage 3: Planning Swarm
           const expansionPlanSwarm = primaryModels.map(model => 
-              planProjectExpansionEdits([{ path: seedFilePath, content: seedContent }], prompt, model)
+              planProjectExpansionEdits(seedFiles, randomFiles, prompt, model)
           );
           const plan = await Promise.any(expansionPlanSwarm);
           if (!plan) throw new Error("Failed to plan expansion.");
 
-          const jobList: ProjectExpansionJob[] = plan.filesToCreate.map((f, idx) => ({
-              id: `${repoFullName}::${f.path}::${idx}`, // Unique ID even if paths repeat
-              path: f.path,
+          const jobList: ProjectExpansionJob[] = plan.batches.map((batch, idx) => ({
+              id: `${repoFullName}::batch::${idx}::${Date.now()}::${Math.floor(Math.random() * 10000)}`,
               type: 'create',
-              description: f.description,
-              agentIndex: f.agentIndex,
+              batch,
               status: 'queued',
               content: '',
+              generatedFiles: [],
               error: null,
               workers: [],
               attempts: 0
@@ -664,50 +690,47 @@ export default function App() {
                     workers: [{ model, status: 'working', content: '' }]
                 } : j));
                 
-                let agentContent = '';
-                await generateFileContent(
+                const result = await generateMultipleFilesContent(
                     prompt,
-                    job.path,
-                    job.description,
+                    job.batch.files,
                     (chunk) => {
-                        agentContent += chunk;
                         setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
                             ...j, 
-                            content: agentContent,
-                            workers: [{ model, status: 'working', content: agentContent }]
+                            content: chunk,
+                            workers: [{ model, status: 'working', content: chunk }]
                         } : j));
                     },
-                    () => agentContent,
                     model
                 );
                 
-                const cleanedContent = cleanAiCodeResponse(agentContent);
-                setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing' } : j));
+                setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing', generatedFiles: result.files } : j));
                 
-                await (commitChainRef.current = commitChainRef.current.then(async () => {
-                    // JIT fetch SHA inside the serial lock
-                    let currentSha: string | undefined = undefined;
-                    try {
-                        const f = await getFileContent(token!, owner, repo, job.path, currentBranchByRepo[repoFullName] || 'main');
-                        currentSha = f.sha;
-                    } catch (e) {}
+                // Process each file in the batch sequentially
+                for (const file of result.files) {
+                   await (commitChainRef.current = commitChainRef.current.then(async () => {
+                       let currentSha: string | undefined = undefined;
+                       try {
+                           const f = await getFileContent(token!, owner, repo, file.path, currentBranchByRepo[repoFullName] || 'main');
+                           currentSha = f.sha;
+                       } catch (e) {}
 
-                    return commitFile({
-                        token: token!,
-                        owner,
-                        repo,
-                        branch: currentBranchByRepo[repoFullName] || 'main',
-                        path: job.path,
-                        content: cleanedContent,
-                        message: `AI Expansion Swarm (${model}): ${job.path}`,
-                        sha: currentSha
-                    });
-                }));
+                       return commitFile({
+                           token: token!,
+                           owner,
+                           repo,
+                           branch: currentBranchByRepo[repoFullName] || 'main',
+                           path: file.path,
+                           content: file.content,
+                           message: `AI Expansion Swarm (${model}): ${file.path}`,
+                           sha: currentSha
+                       });
+                   }));
+                }
                 
                 setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
                     ...j, 
                     status: 'success',
-                    workers: [{ model, status: 'finished', content: agentContent }]
+                    workers: [{ model, status: 'finished', content: 'Batch complete.' }]
                 } : j));
            };
 
@@ -725,7 +748,7 @@ export default function App() {
                    try {
                        await processJob(job, model);
                    } catch (e: any) {
-                       console.error(`Model ${model} failed for expansion ${job.path}`, e);
+                       console.error(`Model ${model} failed for expansion batch ${job.id}`, e);
                        job.attempts = (job.attempts || 0) + 1;
                        if (job.attempts < 3) {
                            setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
@@ -746,7 +769,8 @@ export default function App() {
                }
            };
 
-           primaryModels.forEach(model => startWorker(model));
+           const workersToUse = [...primaryModels, ...fallbackModels];
+           workersToUse.forEach(model => startWorker(model));
 
            const checkCompletion = setInterval(() => {
                 const pending = jobQueue.length > 0 || jobList.some(j => j.status === 'queued' || j.status === 'generating' || j.status === 'committing' || j.status === 'retrying');

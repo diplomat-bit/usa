@@ -236,61 +236,129 @@ export const generateFileContent = async (
 
 
 export const planProjectExpansionEdits = async (
-    fileContents: { path: string, content: string }[],
+    seedFiles: { path: string, content: string }[],
+    randomFiles: { path: string, content: string }[],
     prompt: string,
     model: string
 ): Promise<ProjectExpansionPlan> => {
-    const fileContext = fileContents.map(f => `--- START OF SEED FILE ${f.path} ---\n${f.content}\n`).join('');
+    const seedContext = seedFiles.map(f => `--- START OF SEED FILE ${f.path} ---\n${f.content}\n`).join('');
+    const randomContext = randomFiles.map(f => `--- START OF REPO CONTEXT ${f.path} ---\n${f.content}\n`).join('');
+
     const promptForAI = `
-        You are a god-tier AI software architect and massive scale project generator.
-        Your task is to take a single seed file and generate a massive project expansion around it.
-        The user's high-level goal is: "${prompt}"
+        You are an Omega-Level AI Software Architect specializing in massive-scale hyper-growth project expansions.
+        Your task is to analyze a set of SEED files and the overall REPOSITORY context, then plan a MASSIVE expansion that scales the system by orders of magnitude.
 
-        You have been given the content of the SEED FILE.
-        Based on this seed, you must generate a comprehensive plan to create a huge number of new files to build out a complete, production-grade system.
+        **USER GOAL:** "${prompt}"
+
+        **CONTEXT PROVIDED:**
+        1. **SEED FILES**: ${seedFiles.length} files selected by the user as the functional core for expansion.
+        2. **REPO CONTEXT**: 50 random files providing the architectural blueprint (styles, utils, libs).
+
+        **CRITICAL OBJECTIVES:**
+        1. **SCALE**: Do NOT be conservative. If the user provided 150+ seeds, they expect a massive system. Plan for 50-100 batches if necessary.
+        2. **BATCHING**: Group new files into clusters of EXACTLY 10 files where possible (max 10). Each cluster must be logically cohesive (e.g., "Authentication System", "Data Visualization Suite", "Advanced Analytics Tier").
+        3. **PARALLELISM**: Distribute batches across Agent Indexes (0 to 127). These will be picked up by a swarm of workers.
+        4. **CONSISTENCY**: Use the 50 REPO CONTEXT files to ensure every new file fits perfectly into the existing directory structure and uses the same libraries/patterns.
         
-        **OBJECTIVES:**
-        1. Analyze the seed file to understand the core domain and patterns.
-        2. Plan a massive expansion. **Create as many files as possible.** Aim for 50+ new files if the complexity warrants it. Do not hold back.
-        3. 'filesToCreate': A list of NEW files. Assign an agent index (0-22) to each for parallel creation.
-        4. 'filesToEdit': **MUST BE EMPTY.** Do not touch the seed file. The seed file is immutable.
+        **OUTPUT REQUIREMENTS:**
+        - A JSON object with 'reasoning' and 'batches'.
+        - Each batch has 'agentIndex' (0-127) and 'files' (array of {path, description}).
+        - Aim for high volume. Every batch should ideally have 10 files.
 
-        Your response must be a JSON object adhering to the provided schema.
+        **SEED FILES SUMMARY:**
+        ${seedContext.slice(0, 500000)} ${seedContext.length > 500000 ? '...[TRUNCATED FOR TOKENS]...' : ''}
 
-        Here is the SEED FILE context:
-        ${fileContext}
+        **REPOSITORY CONTEXT:**
+        ${randomContext.slice(0, 500000)}
     `;
     const schema = {
         type: Type.OBJECT,
         properties: {
-            filesToEdit: {
+            reasoning: { type: Type.STRING, description: 'Architectural explanation.' },
+            batches: {
                 type: Type.ARRAY,
-                description: 'Must be empty. Do not edit the seed file.',
+                description: 'A list of batches to be generated.',
                 items: {
                     type: Type.OBJECT,
                     properties: {
-                        path: { type: Type.STRING, description: 'Path of the file to edit.' },
-                        changes: { type: Type.STRING, description: 'Detailed, step-by-step instructions for the code modifications.' }
+                        agentIndex: { type: Type.NUMBER, description: 'Agent index (0-22) assigned to this batch.' },
+                        files: {
+                            type: Type.ARRAY,
+                            description: 'Files in this batch. Max 10 per batch.',
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    path: { type: Type.STRING, description: 'Full path of the new file.' },
+                                    description: { type: Type.STRING, description: 'Purpose and content of the file.' }
+                                },
+                                required: ['path', 'description']
+                            }
+                        }
                     },
-                    required: ['path', 'changes']
-                }
-            },
-            filesToCreate: {
-                type: Type.ARRAY,
-                description: 'A massive list of new files to create.',
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        path: { type: Type.STRING, description: 'Full path of the new file to create.' },
-                        description: { type: Type.STRING, description: 'Detailed description of the new file\'s purpose and content.' },
-                        agentIndex: { type: Type.NUMBER, description: 'Agent index (0-22) assigned to create this file.'}
-                    },
-                    required: ['path', 'description', 'agentIndex']
+                    required: ['agentIndex', 'files']
                 }
             }
-        }
+        },
+        required: ['reasoning', 'batches']
     };
     return getAiJsonResponse<ProjectExpansionPlan>(model, promptForAI, schema);
+};
+
+export const generateMultipleFilesContent = async (
+    projectPrompt: string,
+    batch: { path: string, description: string }[],
+    onChunk: (chunk: string) => void,
+    model: string
+): Promise<{ files: { path: string, content: string }[] }> => {
+    const batchDescription = batch.map(f => `- ${f.path}: ${f.description}`).join('\n');
+    const prompt = `
+        You are an expert AI programmer generating multiple files for a project expansion.
+        The overall project goal is: "${projectPrompt}"
+        
+        **YOUR TASK:**
+        Generate content for the following ${batch.length} files:
+        ${batchDescription}
+
+        **OUTPUT FORMAT:**
+        You MUST output a valid JSON object with a "files" array. Each item in the array must have "path" and "content".
+        Example:
+        {
+          "files": [
+            { "path": "src/file1.ts", "content": "..." },
+            { "path": "src/file2.ts", "content": "..." }
+          ]
+        }
+
+        **STRICT RULES:**
+        1. Output ONLY the JSON. No preamble, no markdown fences.
+        2. The content of each file should be the raw source code.
+    `;
+    
+    // We use getAiJsonResponse for structured output
+    const schema = {
+        type: Type.OBJECT,
+        properties: {
+            files: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        path: { type: Type.STRING },
+                        content: { type: Type.STRING }
+                    },
+                    required: ['path', 'content']
+                }
+            }
+        },
+        required: ['files']
+    };
+    
+    // Since streaming logic is complex for JSON, we use getAiJsonResponse directly
+    // but the user wants to see progress. We'll simulate a chunk or just wait.
+    // For now, let's use the non-streaming JSON getter to keep it robust.
+    const result = await getAiJsonResponse<{ files: { path: string, content: string }[] }>(model, prompt, schema);
+    onChunk(JSON.stringify(result, null, 2));
+    return result;
 };
 
 export const streamSingleFileEdit = async (

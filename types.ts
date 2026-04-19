@@ -120,29 +120,29 @@ export interface ProjectGenerationJob {
 }
 
 // Types for the new Project Expansion feature
-export interface ProjectExpansionPlan {
-    filesToEdit: {
-        path: string;
-        changes: string; // Detailed instructions on what to change
-    }[];
-    filesToCreate: {
+export interface ProjectExpansionBatch {
+    agentIndex: number;
+    files: {
         path: string;
         description: string;
-        agentIndex: number; 
     }[];
+}
+
+export interface ProjectExpansionPlan {
+    reasoning: string;
+    batches: ProjectExpansionBatch[];
 }
 
 export type ProjectExpansionJobStatus = 'queued' | 'generating' | 'committing' | 'retrying' | 'success' | 'failed';
 export type ProjectExpansionPhase = 'idle' | 'planning' | 'generating' | 'complete';
 
 export interface ProjectExpansionJob {
-  id: string; // file path
-  path: string;
-  type: 'edit' | 'create';
-  description: string; // For creations, it's purpose. For edits, it's the planned changes.
-  agentIndex: number;
+  id: string; // unique id
+  type: 'create';
+  batch: ProjectExpansionBatch;
   status: ProjectExpansionJobStatus;
-  content: string; // For streaming preview
+  content: string; // Cumulative content for streaming (JSON-like)
+  generatedFiles: { path: string; content: string }[];
   error: string | null;
   workers?: AIWorkerStatus[];
   attempts?: number;
