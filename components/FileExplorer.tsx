@@ -126,6 +126,7 @@ const RepoNode: React.FC<{
     const { repo, tree, onFileClick, selectedFilePath, selectedRepo, selectedFiles, onFileSelection, onDirectorySelection } = props;
     const isRepoSelected = repo.full_name === selectedRepo;
     const [isOpen, setIsOpen] = useState(isRepoSelected);
+    const checkboxRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         if(isRepoSelected && !isOpen) {
@@ -133,9 +134,39 @@ const RepoNode: React.FC<{
         }
     }, [isRepoSelected, isOpen]);
 
+    useEffect(() => {
+        if (checkboxRef.current) {
+            const descendantFiles = getAllFilePaths(tree).map(p => `${repo.full_name}::${p}`);
+            if (descendantFiles.length === 0) {
+                checkboxRef.current.indeterminate = false;
+                checkboxRef.current.checked = false;
+                return;
+            }
+            const selectedCount = descendantFiles.filter(key => selectedFiles.has(key)).length;
+            
+            if (selectedCount > 0 && selectedCount < descendantFiles.length) {
+                checkboxRef.current.indeterminate = true;
+            } else {
+                checkboxRef.current.indeterminate = false;
+                checkboxRef.current.checked = selectedCount === descendantFiles.length;
+            }
+        }
+    }, [selectedFiles, tree, repo.full_name]);
+
+    const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        onDirectorySelection(tree, repo.full_name, e.target.checked);
+    };
+
     return (
         <div className="mb-2">
-            <div className="flex items-center justify-between p-2 hover:bg-gray-700 rounded-md group">
+            <div className="flex items-center p-2 hover:bg-gray-700 rounded-md group">
+                <input 
+                    type="checkbox" 
+                    ref={checkboxRef} 
+                    onChange={handleCheckboxChange} 
+                    className="mr-2 h-4 w-4 rounded bg-gray-800 border-gray-600 text-amber-500 focus:ring-amber-600" 
+                    onClick={(e) => e.stopPropagation()}
+                />
                 <h3 
                     className="text-lg font-semibold cursor-pointer flex items-center flex-grow"
                     onClick={() => setIsOpen(!isOpen)}
