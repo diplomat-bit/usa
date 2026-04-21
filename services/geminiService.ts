@@ -239,7 +239,8 @@ export const planProjectExpansionEdits = async (
     seedFiles: { path: string, content: string }[],
     randomFiles: { path: string, content: string }[],
     prompt: string,
-    model: string
+    model: string,
+    focusArea?: string
 ): Promise<ProjectExpansionPlan> => {
     const seedContext = seedFiles.map(f => `--- START OF SEED FILE ${f.path} ---\n${f.content}\n`).join('');
     const randomContext = randomFiles.map(f => `--- START OF REPO CONTEXT ${f.path} ---\n${f.content}\n`).join('');
@@ -250,20 +251,23 @@ export const planProjectExpansionEdits = async (
 
         **USER GOAL:** "${prompt}"
 
+        **SWARM FOCUS AREA:** ${focusArea || 'General Global Expansion'}
+        (You are part of a swarm. Focus your planned files on this specific architectural domain to prevent redundancy with other agents.)
+
         **CONTEXT PROVIDED:**
         1. **SEED FILES**: ${seedFiles.length} files selected by the user as the functional core for expansion.
-        2. **REPO CONTEXT**: 50 random files providing the architectural blueprint (styles, utils, libs).
+        2. **REPO CONTEXT**: 50 random files providing the architectural blueprint.
 
         **CRITICAL OBJECTIVES:**
-        1. **SCALE**: Do NOT be conservative. If the user provided 150+ seeds, they expect a massive system. Plan for 50-100 batches if necessary.
-        2. **BATCHING**: Group new files into clusters of EXACTLY 10 files where possible (max 10). Each cluster must be logically cohesive (e.g., "Authentication System", "Data Visualization Suite", "Advanced Analytics Tier").
-        3. **PARALLELISM**: Distribute batches across Agent Indexes (0 to 127). These will be picked up by a swarm of workers.
-        4. **CONSISTENCY**: Use the 50 REPO CONTEXT files to ensure every new file fits perfectly into the existing directory structure and uses the same libraries/patterns.
+        1. **SCALE**: Do NOT be conservative. Plan for 5-10 batches of 10 files each for YOUR focus area.
+        2. **BATCHING**: Group new files into clusters of EXACTLY 10 files where possible.
+        3. **PARALLELISM**: Distribute batches across Agent Indexes (0 to 127).
+        4. **CONSISTENCY**: Ensure every new file fits perfectly into the existing directory structure and uses the same libraries/patterns.
         
         **OUTPUT REQUIREMENTS:**
         - A JSON object with 'reasoning' and 'batches'.
         - Each batch has 'agentIndex' (0-127) and 'files' (array of {path, description}).
-        - Aim for high volume. Every batch should ideally have 10 files.
+        - Aim for HIGH DENSITY within your focus area.
 
         **SEED FILES SUMMARY:**
         ${seedContext.slice(0, 500000)} ${seedContext.length > 500000 ? '...[TRUNCATED FOR TOKENS]...' : ''}

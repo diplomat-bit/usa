@@ -659,14 +659,37 @@ export default function App() {
                } catch (e) { return null; }
           })).then(results => results.filter((r): r is {path: string, content: string} => r !== null));
 
-          // Stage 3: Planning Swarm
-          const expansionPlanSwarm = primaryModels.map(model => 
-              planProjectExpansionEdits(seedFiles, randomFiles, prompt, model)
-          );
-          const plan = await Promise.any(expansionPlanSwarm);
-          if (!plan) throw new Error("Failed to plan expansion.");
+          // Stage 3: Planning Swarm with Multi-Focus Agents
+          const focusAreas = [
+              "Core Business Logic & Domain Entities",
+              "UI Infrastructure, Design System & Layouts",
+              "Data Persistence, API Integration & State Management",
+              "Security, Middleware, Error Handling & Logging",
+              "Advanced Feature Implementation & Vertical Slices",
+              "Comprehensive Testing Suite & QA Layer",
+              "Developer Experience, Documentation & Automation",
+              "Integration Tier, Third-party SDKs & Webhooks",
+              "Cross-Cutting Concerns & Architectural Refinement"
+          ];
 
-          const jobList: ProjectExpansionJob[] = plan.batches.map((batch, idx) => ({
+          const modelsToPlanWith = [...primaryModels, ...fallbackModels];
+          const expansionPlanSwarm = modelsToPlanWith.map((model, idx) => 
+              planProjectExpansionEdits(seedFiles, randomFiles, prompt, model, focusAreas[idx % focusAreas.length])
+          );
+
+          const results = await Promise.allSettled(expansionPlanSwarm);
+          const successfulPlans = results
+              .filter((r): r is PromiseFulfilledResult<ProjectExpansionPlan> => r.status === 'fulfilled')
+              .map(r => r.value);
+
+          if (successfulPlans.length === 0) throw new Error("Failed to plan expansion with any agent.");
+
+          // Merge batches from all successful plans
+          // We filter out identical batches or paths here if needed, but for volume 
+          // we'll just merge and let workers handle overlaps if they occur.
+          const allBatches = successfulPlans.flatMap(p => p.batches);
+
+          const jobList: ProjectExpansionJob[] = allBatches.map((batch, idx) => ({
               id: `${repoFullName}::batch::${idx}::${Date.now()}::${Math.floor(Math.random() * 10000)}`,
               type: 'create',
               batch,
