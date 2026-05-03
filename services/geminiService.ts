@@ -100,6 +100,7 @@ async function streamAiResponse(
     const responseStream = await ai.models.generateContentStream({
         model: model,
         contents: [{ role: 'user', parts: [{ text: prompt as string }] }],
+        tools: [{ "google_search": {} } as any],
         config: {
             temperature: 0.1,
             topP: 0.95,
@@ -124,6 +125,7 @@ async function getAiJsonResponse<T>(
     const response = await ai.models.generateContent({
         model,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        tools: [{ "google_search": {} } as any],
         config: {
             responseMimeType: 'application/json',
             responseSchema: schema,
@@ -150,6 +152,10 @@ export const bulkEditFileWithAI = async (
 ): Promise<void> => {
   const prompt = `
     You are an expert AI programmer. Your task is to modify a file based on a high-level instruction.
+
+    **RESEARCH REQUIREMENT:**
+    Before making any changes, use Google Search to research the latest documentation, security best practices, and most efficient implementation patterns related to the instruction: "${instruction}"
+    Ensure the code you provide is "well-researched" and uses up-to-date versions of any libraries or frameworks.
 
     **CRITICAL RULE: Your entire response must be ONLY the raw source code for the file.**
     - Do NOT output markdown code fences (like \`\`\`tsx), any explanatory text, or any preamble.
@@ -224,6 +230,9 @@ export const generateFileContent = async (
         You are creating the file at this path: "${filePath}"
         The purpose of this file is: "${fileDescription}"
 
+        **RESEARCH REQUIREMENT:**
+        Use Google Search to ensure you are using the most stable and modern versions of any libraries or frameworks required for "${projectPrompt}". The code must be well-researched and follow industry-standard best practices for "${filePath}".
+
         Your task is to generate the complete, production-quality code for this single file.
         
         **CRITICAL RULE: Your entire response must be ONLY the raw source code for the file.**
@@ -259,10 +268,11 @@ export const planProjectExpansionEdits = async (
         2. **REPO CONTEXT**: 50 random files providing the architectural blueprint.
 
         **CRITICAL OBJECTIVES:**
-        1. **SCALE**: Do NOT be conservative. Plan for 5-10 batches of 10 files each for YOUR focus area.
-        2. **BATCHING**: Group new files into clusters of EXACTLY 10 files where possible.
-        3. **PARALLELISM**: Distribute batches across Agent Indexes (0 to 127).
-        4. **CONSISTENCY**: Ensure every new file fits perfectly into the existing directory structure and uses the same libraries/patterns.
+        1. **RESEARCH**: Use Google Search to verify existing libraries in the repo context and ensure any new files align with the latest versions of shared dependencies.
+        2. **SCALE**: Do NOT be conservative. Plan for 5-10 batches of 10 files each for YOUR focus area.
+        3. **BATCHING**: Group new files into clusters of EXACTLY 10 files where possible.
+        4. **PARALLELISM**: Distribute batches across Agent Indexes (0 to 127).
+        5. **CONSISTENCY**: Ensure every new file fits perfectly into the existing directory structure and uses the same libraries/patterns.
         
         **OUTPUT REQUIREMENTS:**
         - A JSON object with 'reasoning' and 'batches'.
@@ -408,6 +418,10 @@ export const planRepositoryEdit = async (
 
         **User Request:** "${instruction}"
         (The user was viewing this file when they made the request: "${activeFilePath}")
+
+        **RESEARCH REQUIREMENT:**
+        You MUST use Google Search to research the task: "${instruction}".
+        Verify API signatures for any libraries used in the repository context and ensure your plan is based on "well-researched", modern implementation standards.
 
         **Your Task:**
         1.  **Reasoning:** First, in a few sentences, explain your plan. Describe which files you will edit and why, outlining your high-level strategy to fulfill the user request. This reasoning is critical for the user to understand your thought process.
