@@ -5,8 +5,8 @@ import { ProjectPlan, ProjectExpansionPlan, RepositoryEditPlan } from '../types'
 // PRIMARY MODELS: The front line of the Autonomous Architect
 export const primaryModels = [
     "gemini-3.1-pro-preview",           // The 'Identity as Authority' Lead
-    "gemini-3.1-flash-lite-preview",    // Replaced 2.5-flash-lite in March
-    "gemini-3-flash-preview",           // Reliable, fast production
+    "gemini-3.1-flash-lite",            // Replaced preview in March
+    "gemini-3.5-flash",                 // Standard ultra-fast model
     "gemini-pro-latest",                // Currently points to 3.1 Pro
     "gemini-flash-latest"               // Currently points to 3 Flash
 ];
@@ -100,11 +100,11 @@ async function streamAiResponse(
     const responseStream = await ai.models.generateContentStream({
         model: model,
         contents: [{ role: 'user', parts: [{ text: prompt as string }] }],
-        tools: [{ "google_search": {} } as any],
         config: {
             temperature: 0.1,
             topP: 0.95,
             topK: 64,
+            tools: [{ googleSearch: {} }],
         },
     });
 
@@ -125,13 +125,13 @@ async function getAiJsonResponse<T>(
     const response = await ai.models.generateContent({
         model,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        tools: [{ "google_search": {} } as any],
         config: {
             responseMimeType: 'application/json',
             responseSchema: schema,
             temperature: 0.0,
             topP: 0.95,
             topK: 64,
+            tools: [{ googleSearch: {} }],
         },
     });
     
@@ -153,9 +153,12 @@ export const bulkEditFileWithAI = async (
   const prompt = `
     You are an expert AI programmer. Your task is to modify a file based on a high-level instruction.
 
-    **RESEARCH REQUIREMENT:**
-    Before making any changes, use Google Search to research the latest documentation, security best practices, and most efficient implementation patterns related to the instruction: "${instruction}"
-    Ensure the code you provide is "well-researched" and uses up-to-date versions of any libraries or frameworks.
+    **HYPER-AGGRESSIVE RESEARCH REQUIREMENT:**
+    You MUST use Google Search to perform an exhaustive deep-dive into the instruction: "${instruction}".
+    - Pull from at least 10+ distinct authoritative sources (MDN, official GitHub repositories, documentation sites, technical whitepapers).
+    - Research the LATEST stable versions of all included libraries.
+    - If this is part of a multi-file edit, ensure you cross-reference the research across ALL files to maintain a unified architectural vision.
+    - Do NOT stop at the first result. Look for the most modern, optimized, and secure implementation patterns (e.g., Performance, Accessibility, Scalability).
 
     **CRITICAL RULE: Your entire response must be ONLY the raw source code for the file.**
     - Do NOT output markdown code fences (like \`\`\`tsx), any explanatory text, or any preamble.
@@ -230,8 +233,11 @@ export const generateFileContent = async (
         You are creating the file at this path: "${filePath}"
         The purpose of this file is: "${fileDescription}"
 
-        **RESEARCH REQUIREMENT:**
-        Use Google Search to ensure you are using the most stable and modern versions of any libraries or frameworks required for "${projectPrompt}". The code must be well-researched and follow industry-standard best practices for "${filePath}".
+        **DEEP-RESEARCH INTEGRITY:**
+        Perform a comprehensive web search to identify the most stable, secure, and performant versions of all libraries required for "${projectPrompt}". 
+        - Analyze multiple implementation patterns (e.g., Hooks vs. Context vs. Logic isolation).
+        - Ensure the code follows the absolute "Gold Standard" of current industry best practices.
+        - The resulting file must be ready for a high-traffic production environment.
 
         Your task is to generate the complete, production-quality code for this single file.
         
@@ -268,16 +274,17 @@ export const planProjectExpansionEdits = async (
         2. **REPO CONTEXT**: 50 random files providing the architectural blueprint.
 
         **CRITICAL OBJECTIVES:**
-        1. **RESEARCH**: Use Google Search to verify existing libraries in the repo context and ensure any new files align with the latest versions of shared dependencies.
-        2. **SCALE**: Do NOT be conservative. Plan for 5-10 batches of 10 files each for YOUR focus area.
-        3. **BATCHING**: Group new files into clusters of EXACTLY 10 files where possible.
-        4. **PARALLELISM**: Distribute batches across Agent Indexes (0 to 127).
-        5. **CONSISTENCY**: Ensure every new file fits perfectly into the existing directory structure and uses the same libraries/patterns.
+        1. **UNRESTRICTED SCALE**: Do NOT be conservative. If the goal is massive expansion, plan for 20-50 batches of 10 files each. We want HUNDREDS of files that form a rich, interconnected ecosystem.
+        2. **RESEARCH-FIRST PLANNING**: Use Google Search to analyze the existing libraries in the repo context and find their most powerful, underutilized features to include in the expansion.
+        3. **COHESIVE BATCHING**: Group new files into clusters (EXACTLY 10 files). Each cluster must be a functional "Vertical Slice" (e.g., "Full Authentication Backend", "Interactive Dashboard Tier", "Real-time Notification Layer").
+        4. **GLOBAL SWARM COORDINATION**: Distribute across Agent Indexes (0 to 127). Ensure the plan describes how these parts talk to each other to avoid overlap.
+        5. **CONSISTENCY & QUALITY**: Every file MUST follow the architectural blueprint from the repo context.
+        6. **DEEP EXPLANATION**: In your 'reasoning', be extremely verbose. Detail every architectural decision, library choice, and inter-file relationship.
         
         **OUTPUT REQUIREMENTS:**
         - A JSON object with 'reasoning' and 'batches'.
-        - Each batch has 'agentIndex' (0-127) and 'files' (array of {path, description}).
-        - Aim for HIGH DENSITY within your focus area.
+        - Aim for MAX VOLUME. If you can think of a feature that adds value, add a batch for it. We want HUNDREDS of files.
+        - Ensure EVERY batch has exactly 10 files unless the domain is truly exhausted.
 
         **SEED FILES SUMMARY:**
         ${seedContext.slice(0, 500000)} ${seedContext.length > 500000 ? '...[TRUNCATED FOR TOKENS]...' : ''}
@@ -323,20 +330,22 @@ export const generateMultipleFilesContent = async (
     batch: { path: string, description: string }[],
     onChunk: (chunk: string) => void,
     model: string
-): Promise<{ files: { path: string, content: string }[] }> => {
+): Promise<{ files: { path: string, content: string }[], explanation: string }> => {
     const batchDescription = batch.map(f => `- ${f.path}: ${f.description}`).join('\n');
     const prompt = `
         You are an expert AI programmer generating multiple files for a project expansion.
         The overall project goal is: "${projectPrompt}"
         
         **YOUR TASK:**
-        Generate content for the following ${batch.length} files:
+        1. Analyze the required files and provide a detailed 3-5 sentence explanation of how these files integrate into the project and the libraries/patterns you are using.
+        2. Generate content for the following ${batch.length} files:
         ${batchDescription}
 
         **OUTPUT FORMAT:**
-        You MUST output a valid JSON object with a "files" array. Each item in the array must have "path" and "content".
+        You MUST output a valid JSON object with detailed source code.
         Example:
         {
+          "explanation": "...",
           "files": [
             { "path": "src/file1.ts", "content": "..." },
             { "path": "src/file2.ts", "content": "..." }
@@ -352,6 +361,7 @@ export const generateMultipleFilesContent = async (
     const schema = {
         type: Type.OBJECT,
         properties: {
+            explanation: { type: Type.STRING, description: 'Explanation of this batch and its architectural role.' },
             files: {
                 type: Type.ARRAY,
                 items: {
@@ -364,13 +374,11 @@ export const generateMultipleFilesContent = async (
                 }
             }
         },
-        required: ['files']
+        required: ['explanation', 'files']
     };
     
     // Since streaming logic is complex for JSON, we use getAiJsonResponse directly
-    // but the user wants to see progress. We'll simulate a chunk or just wait.
-    // For now, let's use the non-streaming JSON getter to keep it robust.
-    const result = await getAiJsonResponse<{ files: { path: string, content: string }[] }>(model, prompt, schema);
+    const result = await getAiJsonResponse<{ files: { path: string, content: string }[], explanation: string }>(model, prompt, schema);
     onChunk(JSON.stringify(result, null, 2));
     return result;
 };
@@ -419,13 +427,15 @@ export const planRepositoryEdit = async (
         **User Request:** "${instruction}"
         (The user was viewing this file when they made the request: "${activeFilePath}")
 
-        **RESEARCH REQUIREMENT:**
-        You MUST use Google Search to research the task: "${instruction}".
-        Verify API signatures for any libraries used in the repository context and ensure your plan is based on "well-researched", modern implementation standards.
+        **DEEP RESEARCH INJUNCTION:**
+        You MUST use Google Search to exhaustively research: "${instruction}".
+        - Scan the latest v2026/2027 documentation for all libraries in the context.
+        - Identify potential architectural conflicts before they happen.
+        - Plan for SCALE: If the user request implies a large feature, plan for MANY files, not just 1 or 2.
 
         **Your Task:**
-        1.  **Reasoning:** First, in a few sentences, explain your plan. Describe which files you will edit and why, outlining your high-level strategy to fulfill the user request. This reasoning is critical for the user to understand your thought process.
-        2.  **filesToEdit:** Second, create a precise list of files to edit. For each file, provide a detailed, step-by-step description of the exact changes needed. This is not the code itself, but a set of instructions for another AI to execute. Be specific. For example, instead of "update the function," say "in the 'handleSubmit' function, add a new 'if' condition to check for 'user.id' before calling the API."
+        1.  **Reasoning:** Explain your deep-research findings and architectural strategy. Identify which files will be created or edited to ensure a robust system.
+        2.  **filesToEdit:** Create a precise, massive list of files. For each, provide granular, non-repetitive change instructions. Use your research to guide specific implementation details (e.g., "Use the new AsyncLocalStorage API for session tracking as per latest Node.js docs").
 
         Your output must be a single JSON object that strictly follows the provided schema.
 

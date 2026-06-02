@@ -142,6 +142,7 @@ export interface ProjectExpansionJob {
   batch: ProjectExpansionBatch;
   status: ProjectExpansionJobStatus;
   content: string; // Cumulative content for streaming (JSON-like)
+  thought?: string; // Agent reasoning for this batch
   generatedFiles: { path: string; content: string }[];
   error: string | null;
   workers?: AIWorkerStatus[];

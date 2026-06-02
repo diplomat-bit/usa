@@ -47,6 +47,7 @@ export default function App() {
   const [isExpandingProject, setIsExpandingProject] = useState(false);
   const [expansionJobs, setExpansionJobs] = useState<ProjectExpansionJob[]>([]);
   const [expansionPhase, setExpansionPhase] = useState<ProjectExpansionPhase>('idle');
+  const [expansionReasonings, setExpansionReasonings] = useState<string[]>([]);
   
   // State for the new Advanced AI Edit feature
   const [isAdvancedEditModalOpen, setAdvancedEditModalOpen] = useState(false);
@@ -617,6 +618,7 @@ export default function App() {
       setIsExpandingProject(true);
       setExpansionPhase('planning');
       setExpansionJobs([]);
+      setExpansionReasonings([]);
 
       if (!token || selectedFiles.size === 0) {
           setAlert({ type: 'error', message: 'Please select at least one seed file.' });
@@ -684,6 +686,9 @@ export default function App() {
 
           if (successfulPlans.length === 0) throw new Error("Failed to plan expansion with any agent.");
 
+          // Capture all reasonings
+          setExpansionReasonings(successfulPlans.map(p => p.reasoning));
+
           // Merge batches from all successful plans
           // We filter out identical batches or paths here if needed, but for volume 
           // we'll just merge and let workers handle overlaps if they occur.
@@ -726,7 +731,12 @@ export default function App() {
                     model
                 );
                 
-                setExpansionJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'committing', generatedFiles: result.files } : j));
+                setExpansionJobs(prev => prev.map(j => j.id === job.id ? { 
+                    ...j, 
+                    status: 'committing', 
+                    generatedFiles: result.files,
+                    thought: result.explanation 
+                } : j));
                 
                 // Process each file in the batch sequentially
                 for (const file of result.files) {
@@ -972,18 +982,40 @@ export default function App() {
                   }
 
                   setAdvancedEditPhase('triggering_workflow');
+                  // Capture previous runs before triggering the workflow dispatch
+                  let runsBefore: { total_count: number; workflow_runs: WorkflowRun[] } | null = null;
+                  try {
+                      runsBefore = await getWorkflowRuns(token, owner, repo, workflowId, branch);
+                  } catch (e) {
+                      console.error("Failed to query workflow runs before trigger:", e);
+                  }
+                  const existingRunIds = new Set(runsBefore?.workflow_runs.map(r => r.id) || []);
+
                   await triggerWorkflow(token, owner, repo, workflowId, branch);
                   
                   setAdvancedEditPhase('waiting_for_workflow');
                   await new Promise(r => setTimeout(r, 5000));
                   
                   let run: WorkflowRun | null = null;
+                  const startTime = Date.now();
                   while (true) {
                       const runs = await getWorkflowRuns(token, owner, repo, workflowId, branch);
-                      if (runs.workflow_runs.length > 0) {
-                          run = runs.workflow_runs[0];
+                      // Look for a brand new run id that was not present before we triggered it
+                      const newestUnseenRun = runs.workflow_runs.find(r => !existingRunIds.has(r.id));
+                      
+                      if (newestUnseenRun) {
+                          run = newestUnseenRun;
                           setWorkflowRunUrl(run.html_url);
                           if (run.status === 'completed') break;
+                      } else if (runs.workflow_runs.length > 0) {
+                          // Fallback: If 40 seconds pass and no newer run ID appears, fall back to the most recent run 
+                          // but only if it's marked as queued/in_progress or is completed after our start time
+                          const mostRecent = runs.workflow_runs[0];
+                          if (Date.now() - startTime > 40000) {
+                              run = mostRecent;
+                              setWorkflowRunUrl(run.html_url);
+                              if (run.status === 'completed') break;
+                          }
                       }
                       await new Promise(r => setTimeout(r, 5000));
                   }
@@ -1148,6 +1180,7 @@ export default function App() {
           <ProjectExpansionProgress
             jobs={expansionJobs}
             phase={expansionPhase}
+            reasonings={expansionReasonings}
             onClose={() => setIsExpandingProject(false)}
             isComplete={expansionPhase === 'complete'}
           />
