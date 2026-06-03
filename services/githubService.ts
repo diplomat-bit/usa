@@ -102,8 +102,13 @@ const buildTreeStructure = (items: GitTreeItem[]): (DirNode | FileNode)[] => {
 };
 
 
+export async function fetchFlatRepoTree(token: string, owner: string, repo: string, branch: string): Promise<GitTreeItem[]> {
+    const { tree } = await githubFetch<{ tree: GitTreeItem[] }>(`/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`, token);
+    return tree;
+}
+
 export async function fetchRepoTree(token: string, owner: string, repo: string, branch: string): Promise<(DirNode | FileNode)[]> {
-  const { tree } = await githubFetch<{ tree: GitTreeItem[] }>(`/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`, token);
+  const tree = await fetchFlatRepoTree(token, owner, repo, branch);
   return buildTreeStructure(tree);
 }
 

@@ -165,6 +165,7 @@ export interface WorkflowRun {
   status: 'queued' | 'in_progress' | 'completed' | 'requested';
   conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | null;
   html_url: string;
+  created_at: string;
 }
 
 // Types for the new Advanced AI Edit feature

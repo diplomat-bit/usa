@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { AuthModal } from './components/AuthModal';
 import { FileExplorer } from './components/FileExplorer';
 import { EditorCanvas } from './components/EditorCanvas';
-import { fetchAllRepos, fetchRepoTree, getFileContent, commitFile, getRepoBranches, createBranch, createPullRequest, createRepo, triggerWorkflow, getWorkflowRuns, getWorkflowRun, getWorkflowRunLogs } from './services/githubService';
+import { fetchAllRepos, fetchRepoTree, fetchFlatRepoTree, getFileContent, commitFile, getRepoBranches, createBranch, createPullRequest, createRepo, triggerWorkflow, getWorkflowRuns, getWorkflowRun, getWorkflowRunLogs } from './services/githubService';
 import { primaryModels, fallbackModels, planRepositoryEdit, bulkEditFileWithAI, generateProjectPlan, generateFileContent, planProjectExpansionEdits, generateMultipleFilesContent, modelsToUse, streamSingleFileEdit, cleanAiCodeResponse, correctCodeFromBuildError, streamRepositoryFileEdit, setGeminiApiKey } from './services/geminiService';
 import { GithubRepo, UnifiedFileTree, SelectedFile, Alert, Branch, FileNode, DirNode, BulkEditJob, ProjectGenerationJob, ProjectExpansionJob, ProjectExpansionPhase, ProjectPlan, AdvancedEditJob, AdvancedEditPhase, WorkflowRun, AdvancedEditJobStatus, RepositoryEditPlan, ProjectExpansionPlan } from './types';
 import { Spinner } from './components/Spinner';
@@ -53,6 +53,10 @@ export default function App() {
   const [isAdvancedEditModalOpen, setAdvancedEditModalOpen] = useState(false);
   const [isAdvancedEditing, setIsAdvancedEditing] = useState(false);
   const [advancedEditJobs, setAdvancedEditJobs] = useState<AdvancedEditJob[]>([]);
+  const advancedEditJobsRef = useRef<AdvancedEditJob[]>([]);
+  useEffect(() => {
+    advancedEditJobsRef.current = advancedEditJobs;
+  }, [advancedEditJobs]);
   const [advancedEditPhase, setAdvancedEditPhase] = useState<AdvancedEditPhase>('idle');
   const [verificationAttempt, setVerificationAttempt] = useState(0);
   const [advancedEditBuildLogs, setAdvancedEditBuildLogs] = useState<string | null>(null);
@@ -852,6 +856,22 @@ export default function App() {
               while (attempt <= MAX_ATTEMPTS) {
                   setVerificationAttempt(attempt);
                   
+                  // Refresh current files from the actual repo before planning a fix
+                  try {
+                      const flatTree = await fetchFlatRepoTree(token, owner, repo, branch);
+                      const fullFiles = await Promise.all(flatTree.filter(node => node.type === 'blob').map(async node => {
+                          try {
+                              const content = await getFileContent(token, owner, repo, node.path, branch);
+                              return { path: node.path, content: content.content, sha: content.sha };
+                          } catch (e) {
+                              return null;
+                          }
+                      }));
+                      currentFiles = fullFiles.filter(f => f !== null) as { path: string, content: string, sha: string }[];
+                  } catch (e) {
+                      console.error("Failed to refresh files during advanced edit loop", e);
+                  }
+
                   if (attempt === 1) setAdvancedEditPhase('planning');
                   else setAdvancedEditPhase('analyzing_failure');
 
@@ -928,6 +948,9 @@ export default function App() {
                               message: `AI Swarm Edit (${model}) (Attempt ${attempt}): ${fileEdit.path}`,
                               sha: currentSha
                           });
+                      }).catch(e => {
+                          console.error("Serial commit failed, advancing chain anyway", e);
+                          throw e; // still throw so the job can retry
                       }));
 
                       setAdvancedEditJobs(prev => prev.map((j, i) => i === jobIndex ? { 
@@ -956,7 +979,7 @@ export default function App() {
                               if (item.attempts < 3) {
                                   setAdvancedEditJobs(prev => prev.map(j => j.id === item.path ? { 
                                       ...j, 
-                                      status: 'planning', // reusable for retrying status
+                                      status: 'planning', 
                                       error: `Retrying (${item.attempts}/3)...` 
                                   } : j));
                                   queue.push(item);
@@ -972,14 +995,24 @@ export default function App() {
                       }
                   };
 
-                  await Promise.all(primaryModels.map(model => runWorker(model)));
-                  
-                  // Ensure all jobs finished (either success or failed)
-                  while (true) {
-                      const pending = jobs.filter(j => j.status === 'planning' || j.status === 'editing' || j.status === 'committing').length;
-                      if (pending === 0 && queue.length === 0) break;
-                      await new Promise(r => setTimeout(r, 1000));
-                  }
+                  // Re-run workers until everything in queue is finished or failed
+                  const runAllWorkers = async () => {
+                      while (true) {
+                          const currentJobs = advancedEditJobsRef.current;
+                          const pendingInQueue = queue.length > 0;
+                          const activeJobs = currentJobs.filter(j => j.status === 'planning' || j.status === 'editing' || j.status === 'committing').length;
+                          
+                          if (!pendingInQueue && activeJobs === 0) break;
+                          
+                          if (pendingInQueue) {
+                              await Promise.all(primaryModels.map(model => runWorker(model)));
+                          } else {
+                              await new Promise(r => setTimeout(r, 1000));
+                          }
+                      }
+                  };
+
+                  await runAllWorkers();
 
                   setAdvancedEditPhase('triggering_workflow');
                   // Capture previous runs before triggering the workflow dispatch
@@ -999,23 +1032,40 @@ export default function App() {
                   let run: WorkflowRun | null = null;
                   const startTime = Date.now();
                   while (true) {
-                      const runs = await getWorkflowRuns(token, owner, repo, workflowId, branch);
-                      // Look for a brand new run id that was not present before we triggered it
-                      const newestUnseenRun = runs.workflow_runs.find(r => !existingRunIds.has(r.id));
-                      
-                      if (newestUnseenRun) {
-                          run = newestUnseenRun;
-                          setWorkflowRunUrl(run.html_url);
-                          if (run.status === 'completed') break;
-                      } else if (runs.workflow_runs.length > 0) {
-                          // Fallback: If 40 seconds pass and no newer run ID appears, fall back to the most recent run 
-                          // but only if it's marked as queued/in_progress or is completed after our start time
-                          const mostRecent = runs.workflow_runs[0];
-                          if (Date.now() - startTime > 40000) {
-                              run = mostRecent;
+                      try {
+                          const runs = await getWorkflowRuns(token, owner, repo, workflowId, branch);
+                          // Look for a brand new run id that was not present before we triggered it
+                          const newestUnseenRun = runs.workflow_runs.find(r => !existingRunIds.has(r.id));
+                          
+                          if (newestUnseenRun) {
+                              run = newestUnseenRun;
                               setWorkflowRunUrl(run.html_url);
-                              if (run.status === 'completed') break;
+                              if (run.status === 'completed') {
+                                  console.log("Workflow run completed:", run.id, run.conclusion);
+                                  break;
+                              }
+                          } else if (runs.workflow_runs.length > 0) {
+                              // Fallback: If 60 seconds pass and no newer run ID appears, 
+                              // check if the most recent run was created after we started.
+                              const mostRecent = runs.workflow_runs[0];
+                              const runCreatedAt = new Date(mostRecent.created_at).getTime();
+                              
+                              if (runCreatedAt > startTime - 10000) { // allowance for clock skew
+                                  run = mostRecent;
+                                  setWorkflowRunUrl(run.html_url);
+                                  if (run.status === 'completed') {
+                                      console.log("Fallback: Workflow run completed:", run.id, run.conclusion);
+                                      break;
+                                  }
+                              } else if (Date.now() - startTime > 90000) {
+                                  // Truly stuck waiting for a run to even appear
+                                  console.warn("No new workflow run appeared after 90 seconds.");
+                                  // We'll keep waiting, but maybe the user can see the link if we guessed the most recent one is it
+                                  setWorkflowRunUrl(mostRecent.html_url); 
+                              }
                           }
+                      } catch (e) {
+                          console.error("Error polling workflow runs:", e);
                       }
                       await new Promise(r => setTimeout(r, 5000));
                   }
