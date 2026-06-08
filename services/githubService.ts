@@ -113,12 +113,21 @@ export async function fetchRepoTree(token: string, owner: string, repo: string, 
 }
 
 
+/**
+ * Decodes a Base64 string to a UTF-8 string.
+ * @param str The Base64 encoded string.
+ * @returns The decoded UTF-8 string.
+ */
+function b64_to_utf8(str: string): string {
+  return decodeURIComponent(escape(atob(str.replace(/\s/g, ''))));
+}
+
 export async function getFileContent(token: string, owner: string, repo: string, path: string, branch?: string): Promise<{ path: string; content: string; sha: string }> {
   const url = branch ? `/repos/${owner}/${repo}/contents/${path}?ref=${branch}` : `/repos/${owner}/${repo}/contents/${path}`;
   const data = await githubFetch<{ path: string, content: string, sha: string }>(url, token);
   return {
     ...data,
-    content: atob(data.content), // GitHub API returns content base64 encoded
+    content: b64_to_utf8(data.content), // Correctly decode UTF-8 content
   };
 }
 

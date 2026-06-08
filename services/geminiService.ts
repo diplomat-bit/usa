@@ -1,22 +1,38 @@
-import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { ProjectPlan, ProjectExpansionPlan, RepositoryEditPlan } from '../types';
 
-// Updated to a 7-worker configuration for higher concurrency
-// PRIMARY MODELS: The front line of the Autonomous Architect
+// Updated to use the exhaustive list for the Autonomous Architect swarm
 export const primaryModels = [
-    "gemini-3.1-pro-preview",           // The 'Identity as Authority' Lead
-    "gemini-3.1-flash-lite",            // Replaced preview in March
-    "gemini-3.5-flash",                 // Standard ultra-fast model
-    "gemini-pro-latest",                // Currently points to 3.1 Pro
-    "gemini-flash-latest"               // Currently points to 3 Flash
+  "gemini-3.1-pro-preview",
+  "gemini-3.1-flash-lite-preview",
+  "gemini-3-pro-preview",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash-preview-09-2025",
+  "gemini-2.5-flash-lite-preview-09-2025",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-001",
+  "gemini-2.0-flash-exp",
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash-lite-001",
+  "gemini-2.0-flash-lite-preview",
+  "gemini-2.0-flash-lite-preview-02-05",
+  "gemini-pro-latest",
+  "gemini-exp-1206",
+  "gemma-3-27b-it",
+  "gemma-3-12b-it",
+  "gemma-3-4b-it",
+  "gemma-3-1b-it",
+  "gemma-3n-e4b-it",
+  "gemma-3n-e2b-it"
 ];
 
 // FALLBACK MODELS: Redundancy for the SAVE America Infrastructure
 export const fallbackModels = [
-    "gemma-4-31b-it",                    // Released April 2, 2026
-    "gemma-4-26b-a4b-it",                // High-efficiency open model
-    "gemini-2.5-pro",                   // Older but stable until late 2026
-    "gemini-2.5-flash"                  // Proven reliability
+    "gemini-1.5-flash-8b",
+    "gemini-1.0-pro",
+    "gemma-2-27b-it",
+    "gemma-2-9b-it"
 ];
 
 export const modelsToUse = [...primaryModels, ...fallbackModels];
@@ -24,7 +40,7 @@ export const modelsToUse = [...primaryModels, ...fallbackModels];
 const MAX_CONTEXT_CHARACTERS = 4000000; // Cap to prevent token limit errors, approx 250k tokens.
 
 // Mutable variable to store the API key provided by the UI
-let geminiApiKey = process.env.API_KEY || '';
+let geminiApiKey = '';
 
 export const setGeminiApiKey = (key: string) => {
     geminiApiKey = key;
@@ -95,22 +111,56 @@ async function streamAiResponse(
     onChunk: (chunk: string) => void,
     getFullResponse: () => string
 ): Promise<void> {
-    // Use the dynamic key
-    const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-    const responseStream = await ai.models.generateContentStream({
-        model: model,
-        contents: [{ role: 'user', parts: [{ text: prompt as string }] }],
-        config: {
-            temperature: 0.1,
-            topP: 0.95,
-            topK: 64,
-            tools: [{ googleSearch: {} }],
+    const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-gemini-key': geminiApiKey
         },
+        body: JSON.stringify({
+            TargetModel: model,
+            prompt: typeof prompt === 'string' ? prompt : JSON.stringify(prompt),
+            isStream: true,
+            config: {
+                temperature: 0.1,
+                topP: 0.95,
+                topK: 64
+            }
+        })
     });
 
-    for await (const chunk of responseStream) {
-        if (chunk.text) {
-            onChunk(chunk.text);
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to stream AI response');
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No reader available');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+                try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.text) {
+                        onChunk(parsed.text);
+                    }
+                } catch (e) {
+                    console.error('Error parsing stream chunk', e);
+                }
+            }
         }
     }
 }
@@ -120,25 +170,33 @@ async function getAiJsonResponse<T>(
     prompt: string,
     schema: any
 ): Promise<T> {
-    // Use the dynamic key
-    const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-    const response = await ai.models.generateContent({
-        model,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: {
-            responseMimeType: 'application/json',
-            responseSchema: schema,
-            temperature: 0.0,
-            topP: 0.95,
-            topK: 64,
-            tools: [{ googleSearch: {} }],
+    const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-gemini-key': geminiApiKey
         },
+        body: JSON.stringify({
+            TargetModel: model,
+            prompt,
+            isStream: false,
+            config: {
+                responseMimeType: 'application/json',
+                responseSchema: schema,
+                temperature: 0.0,
+                topP: 0.95,
+                topK: 64
+            }
+        })
     });
-    
-    if (response.text) {
-        return JSON.parse(response.text.trim()) as T;
+
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to get AI JSON response');
     }
-    throw new Error('AI returned an empty response.');
+
+    const result = await response.json();
+    return JSON.parse(result.text.trim()) as T;
 }
 
 
@@ -192,20 +250,20 @@ export const generateProjectPlan = async (
         - Be comprehensive. Create all the necessary files for a basic, runnable version of the described project.
     `;
     const schema = {
-        type: Type.OBJECT,
+        type: "object",
         properties: {
             files: {
-                type: Type.ARRAY,
+                type: "array",
                 description: 'A list of files to be created for the project.',
                 items: {
-                    type: Type.OBJECT,
+                    type: "object",
                     properties: {
                         path: {
-                            type: Type.STRING,
+                            type: "string",
                             description: 'The full path of the file, including directories. E.g., "src/components/Button.tsx".'
                         },
                         description: {
-                            type: Type.STRING,
+                            type: "string",
                             description: 'A concise, one-sentence description of what this file will contain or its purpose.'
                         }
                     },
@@ -293,24 +351,24 @@ export const planProjectExpansionEdits = async (
         ${randomContext.slice(0, 500000)}
     `;
     const schema = {
-        type: Type.OBJECT,
+        type: "object",
         properties: {
-            reasoning: { type: Type.STRING, description: 'Architectural explanation.' },
+            reasoning: { type: "string", description: 'Architectural explanation.' },
             batches: {
-                type: Type.ARRAY,
+                type: "array",
                 description: 'A list of batches to be generated.',
                 items: {
-                    type: Type.OBJECT,
+                    type: "object",
                     properties: {
-                        agentIndex: { type: Type.NUMBER, description: 'Agent index (0-22) assigned to this batch.' },
+                        agentIndex: { type: "number", description: 'Agent index (0-22) assigned to this batch.' },
                         files: {
-                            type: Type.ARRAY,
+                            type: "array",
                             description: 'Files in this batch. Max 10 per batch.',
                             items: {
-                                type: Type.OBJECT,
+                                type: "object",
                                 properties: {
-                                    path: { type: Type.STRING, description: 'Full path of the new file.' },
-                                    description: { type: Type.STRING, description: 'Purpose and content of the file.' }
+                                    path: { type: "string", description: 'Full path of the new file.' },
+                                    description: { type: "string", description: 'Purpose and content of the file.' }
                                 },
                                 required: ['path', 'description']
                             }
@@ -359,16 +417,16 @@ export const generateMultipleFilesContent = async (
     
     // We use getAiJsonResponse for structured output
     const schema = {
-        type: Type.OBJECT,
+        type: "object",
         properties: {
-            explanation: { type: Type.STRING, description: 'Explanation of this batch and its architectural role.' },
+            explanation: { type: "string", description: 'Explanation of this batch and its architectural role.' },
             files: {
-                type: Type.ARRAY,
+                type: "array",
                 items: {
-                    type: Type.OBJECT,
+                    type: "object",
                     properties: {
-                        path: { type: Type.STRING },
-                        content: { type: Type.STRING }
+                        path: { type: "string" },
+                        content: { type: "string" }
                     },
                     required: ['path', 'content']
                 }
@@ -444,20 +502,20 @@ export const planRepositoryEdit = async (
     `;
 
     const schema = {
-        type: Type.OBJECT,
+        type: "object",
         properties: {
             reasoning: {
-                type: Type.STRING,
+                type: "string",
                 description: "A high-level explanation of your plan, which files you will edit, and why."
             },
             filesToEdit: {
-                type: Type.ARRAY,
+                type: "array",
                 description: 'A list of files to modify and the specific changes for each.',
                 items: {
-                    type: Type.OBJECT,
+                    type: "object",
                     properties: {
-                        path: { type: Type.STRING, description: 'Path of the file to edit.' },
-                        changes: { type: Type.STRING, description: 'Detailed, step-by-step instructions for the code modifications.' }
+                        path: { type: "string", description: 'Path of the file to edit.' },
+                        changes: { type: "string", description: 'Detailed, step-by-step instructions for the code modifications.' }
                     },
                     required: ['path', 'changes']
                 }
@@ -536,20 +594,20 @@ export const correctCodeFromBuildError = async (
     `;
 
     const schema = {
-        type: Type.OBJECT,
+        type: "object",
         properties: {
             reasoning: {
-                type: Type.STRING,
+                type: "string",
                 description: "An analysis of the build failure and a high-level explanation of your new plan to fix it."
             },
             filesToEdit: {
-                type: Type.ARRAY,
+                type: "array",
                 description: 'A new list of files to modify and the specific changes for each to fix the build.',
                 items: {
-                    type: Type.OBJECT,
+                    type: "object",
                     properties: {
-                        path: { type: Type.STRING, description: 'Path of the file to edit.' },
-                        changes: { type: Type.STRING, description: 'Detailed, step-by-step instructions for the new code modifications.' }
+                        path: { type: "string", description: 'Path of the file to edit.' },
+                        changes: { type: "string", description: 'Detailed, step-by-step instructions for the new code modifications.' }
                     },
                     required: ['path', 'changes']
                 }
